@@ -203,20 +203,25 @@ function sqliteConnection(): Sql {
 }
 
 function connection() {
-  const url = process.env.DATABASE_URL || process.env.POSTGRES_URL;
+  const url =
+    process.env.DATABASE_URL ||
+    process.env.POSTGRES_URL ||
+    process.env.EDULEDGER_DATABASE_URL ||
+    process.env.EDULEDGER_POSTGRES_URL;
   if (!url) {
     if (process.env.NODE_ENV === "production" && !process.env.SQLITE_DATABASE_PATH)
       throw new Error(
-        "DATABASE_URL is not configured. Connect a PostgreSQL database in production.",
+        "No PostgreSQL connection URL is configured. Connect Supabase and expose DATABASE_URL, POSTGRES_URL, EDULEDGER_DATABASE_URL, or EDULEDGER_POSTGRES_URL.",
       );
     return (client ??= sqliteConnection());
   }
   if (client) return client;
   const sql = postgres(url, {
-    max: 5,
+    max: process.env.NODE_ENV === "production" ? 1 : 5,
     idle_timeout: 20,
     connect_timeout: 15,
     prepare: false,
+    ssl: process.env.NODE_ENV === "production" ? "require" : undefined,
   });
   const adapter: Sql = {
     dialect: "postgres",
