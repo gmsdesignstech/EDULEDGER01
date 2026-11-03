@@ -1,0 +1,10 @@
+.vercel
+.env*
+.next
+.next-stale-*
+node_modules
+data
+coverage
+*.log
+eduledger-portals
+database
