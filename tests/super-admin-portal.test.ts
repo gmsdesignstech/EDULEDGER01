@@ -9,7 +9,6 @@ import {
   adminSubscriptions,
   createAccount,
   findUserByEmail,
-  run,
 } from "../src/lib/db";
 import { isPrivateAdmin } from "../src/lib/admin-auth";
 import { POST as superAdminLogin } from "../src/app/api/admin/login/route";
@@ -124,7 +123,7 @@ describe("EduLedger Super Admin Portal (Platform Owner Dashboard)", () => {
     // Verify audit log has the records
     const logs = await adminAuditLogs(20);
     const schoolLog = logs.find(
-      (l) => l.schoolName === `Audit School ${stamp}` && l.action.includes("School"),
+      (l) => l.schoolName === `Audit School ${stamp}` && String(l.action).includes("School"),
     );
     expect(schoolLog).toBeDefined();
   });
