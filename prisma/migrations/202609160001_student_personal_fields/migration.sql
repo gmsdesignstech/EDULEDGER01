@@ -1,0 +1,2 @@
+ALTER TABLE students ADD COLUMN IF NOT EXISTS blood_group TEXT;
+ALTER TABLE students ADD COLUMN IF NOT EXISTS mother_name TEXT;

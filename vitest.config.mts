@@ -3,6 +3,9 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    // The isolated PWA prototype uses Node's native test runner and has its own
+    // package script. Keep those .mjs suites out of the main Vitest project.
+    include: ["tests/**/*.test.ts"],
     // Never let integration tests write generated schools/users into the local
     // development database displayed by the super-admin dashboard.
     env: {
@@ -13,6 +16,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
       "server-only": fileURLToPath(
         new URL("./tests/server-only.ts", import.meta.url),
       ),

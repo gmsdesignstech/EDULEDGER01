@@ -1,1 +1,1 @@
-import type{MetadataRoute}from"next";export default function robots():MetadataRoute.Robots{return{rules:{userAgent:"*",allow:"/",disallow:["/dashboard/","/api/"]},sitemap:`${process.env.NEXT_PUBLIC_APP_URL??"https://eduledger.app"}/sitemap.xml`}}
+import type{MetadataRoute}from"next";import{getSiteOrigin}from"@/lib/site-url";export default function robots():MetadataRoute.Robots{const base=getSiteOrigin();return{rules:{userAgent:"*",allow:"/",disallow:["/admin","/api","/billing","/dashboard","/subscription"]},sitemap:`${base}/sitemap.xml`}}

@@ -4,10 +4,14 @@
 
 Set these secrets only in the hosting provider; never commit their values:
 
-- `DATABASE_URL` (or `POSTGRES_URL`): pooled PostgreSQL connection string.
-- `NEXT_PUBLIC_APP_URL`: canonical HTTPS origin.
+- `DATABASE_URL`: server-only pooled PostgreSQL connection string.
+- `NEXT_PUBLIC_APP_URL`: canonical HTTPS origin; production must be `https://eduledger.co.in` with no trailing slash.
 - `ADMIN_USER_ID`: immutable ID of the sole user whose database role is `SUPER_ADMIN` (preferred). `ADMIN_EMAIL` is the fallback identity selector.
 - `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`: required when paid subscriptions are enabled.
+
+Before deploying a database that has not received the registration schema, load
+the production environment locally and run `npm run db:migrate:registration`.
+The command is idempotent and never prints the connection URL.
 
 Optional integrations listed in `.env.example` must remain unset until their server-side implementation is enabled.
 

@@ -8,4 +8,3 @@ export const moduleConfigs:Record<string,ModuleConfig>={
 };
 const placeholder=(title:string,description:string):ModuleConfig=>({title,description,action:`Open ${title}`,fields:[{key:"name",label:"Name",placeholder:title}],metrics:[],defaults:[],comingSoon:true});
 Object.assign(moduleConfigs,{"salary-management":placeholder("Salary Management","Manage staff payroll, deductions and salary statements."),accounts:placeholder("Accounts","Review ledgers, balances and accounting records."),"cash-book":placeholder("Cash Book","Track daily cash receipts and payments."),"audit-log":placeholder("Audit Log","Review secure administrative activity across EduLedger.")});
-export const supportedModules=Object.keys(moduleConfigs);

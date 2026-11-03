@@ -39,15 +39,15 @@ Student fees are independent from the Razorpay-backed school subscription verifi
 
 ## Annual school subscriptions
 
-New school accounts continue from registration to `/subscription`, where six annual plans cover 250–1,000 active students. Plan prices and capacities are loaded on the server; the browser submits only a plan identifier. Mutating school-operation APIs require an active subscription, while login, logout, profile/settings, read/export access, activation endpoints, and Razorpay webhooks remain available.
+New school accounts continue from registration to `/subscription`. New annual subscriptions are calculated server-side at ₹50 per student for one year. The browser never controls the payable amount. School-operation APIs require an active subscription, while authentication, activation endpoints, health checks, admin access, and Razorpay webhooks remain available.
 
-Razorpay configuration uses `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, and `RAZORPAY_WEBHOOK_SECRET`. Configure the webhook URL as `https://YOUR_DOMAIN/api/subscription/webhook` and subscribe to `payment.captured`, `payment.failed`, and `order.paid`.
+Razorpay configuration uses `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, and `RAZORPAY_WEBHOOK_SECRET`. Configure the production webhook URL as `https://eduledger.co.in/api/subscription/webhook` and subscribe to `payment.captured`, `payment.failed`, and `order.paid`.
 
 ## Production setup
 
-- In Vercel, open **Storage**, create or connect a managed PostgreSQL database, and connect it to this project. Authentication and every dashboard feature require either `DATABASE_URL` or Vercel's `POSTGRES_URL` in the Production environment. A local or SQLite fallback is intentionally not used in production.
-- Set `NEXT_PUBLIC_APP_URL` to the production HTTPS origin. Razorpay variables are required only for subscription/payment processing; the other provider variables in `.env.example` are optional until those integrations are enabled. Never expose provider secrets as `NEXT_PUBLIC_*` values.
-- Redeploy after changing environment variables. The application creates its tables and indexes automatically on the first request.
+- In Vercel, open **Storage**, create or connect a managed PostgreSQL database, and set `DATABASE_URL` in the Production environment. Authentication and every dashboard feature require this variable. A local or SQLite fallback is intentionally not used in production.
+- Add `eduledger.co.in` and `www.eduledger.co.in` to the Vercel project, make `eduledger.co.in` the primary domain, and redirect `www` to it. Set `NEXT_PUBLIC_APP_URL=https://eduledger.co.in` in Vercel's Production environment. Razorpay variables are required only for subscription/payment processing; the other provider variables in `.env.example` are optional until those integrations are enabled. Never expose provider secrets as `NEXT_PUBLIC_*` values.
+- Run `npm run db:migrate:registration` with the production `DATABASE_URL` loaded, then redeploy after changing environment variables. The migration is idempotent and provisions the registration-critical tables and indexes before the first request.
 - Configure Google OAuth with the deployed origin and callback URL used by your auth provider.
 - Configure Razorpay to call an HTTPS webhook endpoint. Verify `X-Razorpay-Signature` against the raw request body and update Payment + Subscription in one database transaction. The included verification endpoint demonstrates constant-time checkout signature validation; it deliberately does not unlock plans without persistence.
 - Configure signed Cloudinary uploads with server-generated signatures, MIME allowlists and size limits.

@@ -1,16 +1,22 @@
 import { NextResponse } from "next/server";
 import { paymentSignatureSchema } from "@/lib/validation";
-import { getRazorpayPayment, paymentErrorMessage, verifyRazorpaySignature } from "@/lib/payment";
+import { getRazorpayPayment, PaymentServiceError, paymentErrorMessage, verifyRazorpaySignature } from "@/lib/payment";
 import {
   activateVerifiedSubscription,
   findSubscriptionByOrder,
 } from "@/lib/db";
 import { currentUser } from "@/lib/session";
+import { isValidSubscriptionPricing } from "@/lib/subscription-plans";
 export const runtime = "nodejs";
 export async function POST(request: Request) {
   const user = await currentUser();
   if (!user)
     return NextResponse.json({ error: "Unauthenticated" }, { status: 401 });
+  if (user.role !== "SCHOOL_ADMIN")
+    return NextResponse.json(
+      { error: "Only a school administrator can verify a subscription payment." },
+      { status: 403 },
+    );
   const parsed = paymentSignatureSchema.safeParse(
     await request.json().catch(() => null),
   );
@@ -41,6 +47,7 @@ export async function POST(request: Request) {
       { error: "Signature verification failed" },
       { status: 401 },
     );
+  if(!isValidSubscriptionPricing(order))return NextResponse.json({error:"Subscription pricing validation failed."},{status:409});
   try {
     const payment = await getRazorpayPayment(p);
     if (
@@ -66,6 +73,11 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     console.error("Subscription payment confirmation failed",error instanceof Error?{name:error.name,message:error.message}:error);
+    if(error instanceof PaymentServiceError&&(error.code==="UNREACHABLE"||error.status>=500))
+      return NextResponse.json(
+        { error:"Payment was received and is awaiting confirmation from Razorpay. Your subscription will activate only after verified capture." },
+        { status:202 },
+      );
     return NextResponse.json(
       { error:paymentErrorMessage(error) },
       { status: 502 },

@@ -1,240 +1,38 @@
 import Link from "next/link";
-import {
-  CalendarCheck,
-  GraduationCap,
-  IndianRupee,
-  ReceiptIndianRupee,
-  TrendingUp,
-  UserRoundX,
-  Users,
-  WalletCards,
-  FileText,
-} from "lucide-react";
-import { dashboardData, getSubscription, listClassSummaries } from "@/lib/db";
-import { requireUser } from "@/lib/session";
-import { SubscriptionCard } from "@/components/subscription-card";
-export const runtime = "nodejs";
-const money = (n: number) =>
-  new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-    maximumFractionDigits: 0,
-  }).format(n);
-export default async function Dashboard() {
-  const user = await requireUser(),
-    [data, classSummaries,subscription] = await Promise.all([dashboardData(user.institutionId), listClassSummaries(user.institutionId),getSubscription(user.institutionId)]),
-    firstName = user.name.split(" ")[0],
-    today = new Intl.DateTimeFormat("en-IN", {
-      weekday: "long",
-      day: "numeric",
-      month: "long",
-    }).format(new Date()),
-    stats = [
-      ["Total students", String(data.students), GraduationCap],
-      ["Total teachers", String(data.teachers), Users],
-      ["Present today", String(data.present), CalendarCheck],
-      ["Absent today", String(data.absent), UserRoundX],
-      ["Total fees", money(data.fees.total), WalletCards],
-      ["Collected fees", money(data.fees.collected), IndianRupee],
-      ["Pending fees", money(data.fees.pending), ReceiptIndianRupee],
-      ["Overdue fees", money(data.fees.overdue), TrendingUp],
-    ] as const,
-    max = Math.max(...data.monthly.map((x) => x.amount), 1);
-  return (
-    <div className="mx-auto max-w-[1500px]">
-      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-        <div>
-          <p className="label">{today}</p>
-          <h1 className="mt-2 text-3xl font-black">
-            Good morning, {firstName}
-          </h1>
-          <p className="mt-1 text-muted">
-            Live operations and fee collection across your institution.
-          </p>
-        </div>
-        <div className="flex gap-2">
-          {['SCHOOL_ADMIN','SUPER_ADMIN','ACCOUNTANT'].includes(user.role)&&<a href="/api/export?type=dashboard&format=pdf" target="_blank" rel="noreferrer" className="btn-secondary"><FileText className="size-4"/>PDF summary</a>}
-          <Link href="/dashboard/students" className="btn-primary">
-            + Add student
-          </Link>
-        </div>
-      </div>
-      <SubscriptionCard subscription={subscription}/>
-      <section className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {stats.map(([label, value, Icon]) => (
-          <article className="card p-5" key={label}>
-            <span className="grid size-10 place-items-center rounded-xl bg-brand/10 text-brand">
-              <Icon className="size-5" />
-            </span>
-            <p className="mt-5 text-sm text-muted">{label}</p>
-            <b className="mt-1 block text-2xl">{value}</b>
-          </article>
-        ))}
-      </section>
-      <section className="mt-5 grid gap-4 sm:grid-cols-3">
-        <div className="card p-5">
-          <p className="text-sm text-muted">Today&apos;s collection</p>
-          <b className="mt-2 block text-2xl">{money(data.collections.today)}</b>
-        </div>
-        <div className="card p-5">
-          <p className="text-sm text-muted">This month</p>
-          <b className="mt-2 block text-2xl">{money(data.collections.month)}</b>
-        </div>
-        <div className="card p-5">
-          <p className="text-sm text-muted">Total transactions</p>
-          <b className="mt-2 block text-2xl">{data.collections.transactions}</b>
-        </div>
-      </section>
-      <section className="card mt-5 overflow-hidden">
-        <div className="flex items-center justify-between border-b p-5"><div><h2 className="text-lg font-bold">Classes overview</h2><p className="text-sm text-muted">Live class strength and sections</p></div><Link href="/dashboard/classes" className="text-sm font-bold text-brand">Manage classes</Link></div>
-        <div className="grid gap-px bg-line sm:grid-cols-2 xl:grid-cols-3">{classSummaries.map(item=><div className="flex items-center justify-between bg-panel p-4" key={item.slug}><div><b>{item.name}</b><p className="text-xs text-muted">{item.studentCount} students · {item.sectionCount} sections</p></div><Link href={`/dashboard/classes/${item.slug}`} className="btn-secondary !px-3 !py-2">View class</Link></div>)}</div>
-      </section>
-      <div className="mt-5 grid gap-5 xl:grid-cols-[1.55fr_1fr]">
-        <article className="card p-6">
-          <h2 className="text-lg font-bold">Monthly fee collection</h2>
-          <p className="text-sm text-muted">Successful student fee payments</p>
-          {data.monthly.length ? (
-            <>
-              <div className="mt-8 flex h-60 items-end gap-3 border-b border-l px-4">
-                {data.monthly.map((x) => (
-                  <div
-                    key={x.month}
-                    className="group relative flex h-full flex-1 items-end"
-                  >
-                    <span
-                      className="w-full rounded-t-md bg-brand/80"
-                      style={{
-                        height: `${Math.max(5, (x.amount / max) * 100)}%`,
-                      }}
-                    />
-                    <span className="absolute -top-4 hidden whitespace-nowrap text-xs group-hover:block">
-                      {money(x.amount)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-3 flex justify-around text-xs text-muted">
-                {data.monthly.map((x) => (
-                  <span key={x.month}>{x.month}</span>
-                ))}
-              </div>
-            </>
-          ) : (
-            <div className="grid h-64 place-items-center text-sm text-muted">
-              Collection analytics will appear after the first payment.
-            </div>
-          )}
-        </article>
-        <article className="card p-6">
-          <h2 className="text-lg font-bold">Paid vs pending</h2>
-          <p className="text-sm text-muted">Fee collection progress</p>
-          {data.fees.total > 0 ? (
-            <>
-              <div
-                className="mx-auto my-8 grid size-44 place-items-center rounded-full"
-                style={{
-                  background: `conic-gradient(hsl(var(--brand)) 0 ${(data.fees.collected / data.fees.total) * 100}%,hsl(var(--line)) 0)`,
-                }}
-              >
-                <div className="grid size-32 place-items-center rounded-full bg-panel text-center">
-                  <div>
-                    <b className="text-3xl">
-                      {Math.round(
-                        (data.fees.collected / data.fees.total) * 100,
-                      )}
-                      %
-                    </b>
-                    <small className="block text-muted">Collected</small>
-                  </div>
-                </div>
-              </div>
-              <div className="flex justify-between text-sm">
-                <span>
-                  Paid <b>{money(data.fees.collected)}</b>
-                </span>
-                <span>
-                  Pending <b>{money(data.fees.pending)}</b>
-                </span>
-              </div>
-            </>
-          ) : (
-            <div className="grid h-64 place-items-center text-sm text-muted">
-              Add student fee invoices to see analytics.
-            </div>
-          )}
-        </article>
-      </div>
-      <div className="mt-5 grid gap-5 lg:grid-cols-2">
-        <article className="card p-6">
-          <div className="flex justify-between">
-            <div>
-              <h2 className="text-lg font-bold">Recent fee payments</h2>
-              <p className="text-sm text-muted">
-                Latest successful transactions
-              </p>
-            </div>
-            <Link
-              href="/dashboard/payment-history"
-              className="text-sm font-bold text-brand"
-            >
-              View all
-            </Link>
-          </div>
-          <div className="mt-4 divide-y">
-            {data.recentPayments.map((p) => (
-              <div
-                className="flex items-center justify-between py-3"
-                key={p.id}
-              >
-                <div>
-                  <b className="text-sm">{p.studentName}</b>
-                  <p className="text-xs text-muted">
-                    {p.className}-{p.section} · {p.method} · {p.paymentDate}
-                  </p>
-                </div>
-                <div className="text-right">
-                  <b className="text-emerald-600">+{money(p.amount)}</b>
-                  <p className="text-xs text-muted">{p.receiptNumber}</p>
-                </div>
-              </div>
-            ))}
-            {!data.recentPayments.length && (
-              <p className="py-10 text-center text-sm text-muted">
-                No payments recorded yet.
-              </p>
-            )}
-          </div>
-        </article>
-        <article className="card p-6">
-          <h2 className="text-lg font-bold">Recent activity</h2>
-          <p className="text-sm text-muted">
-            Database-backed administration log
-          </p>
-          <div className="mt-4 divide-y">
-            {(
-              data.activities as {
-                id: string;
-                title: string;
-                description: string;
-                timestamp: string;
-              }[]
-            ).map((a) => (
-              <div className="py-3" key={a.id}>
-                <b className="text-sm">{a.title}</b>
-                <p className="text-xs text-muted">
-                  {a.description} ·{" "}
-                  {new Date(a.timestamp + "Z").toLocaleString("en-IN")}
-                </p>
-              </div>
-            ))}
-            {!data.activities.length && (
-              <p className="py-10 text-center text-sm text-muted">
-                No recent activity.
-              </p>
-            )}
-          </div>
-        </article>
-      </div>
-    </div>
-  );
+import type { ElementType,ReactNode } from "react";
+import {Activity,ArrowRight,CalendarCheck,CalendarDays,CircleDollarSign,FileBarChart,FileText,GraduationCap,IndianRupee,ReceiptIndianRupee,TrendingDown,TrendingUp,UserPlus,UserRoundX,WalletCards} from "lucide-react";
+import {dashboardData,dashboardYears,getSubscription,listClassSummaries} from "@/lib/db";
+import {DashboardYearSelector} from "@/components/dashboard-year-selector";
+import {requireUser} from "@/lib/session";
+import {SubscriptionCard} from "@/components/subscription-card";
+import {DashboardAcademics} from "@/components/dashboard-academics";
+import {DailyFeeCollectionChart} from "@/components/daily-fee-collection-chart";
+export const runtime="nodejs";
+const money=(n:number)=>new Intl.NumberFormat("en-IN",{style:"currency",currency:"INR",maximumFractionDigits:0}).format(n);
+const tones={violet:"bg-violet-50 text-violet-700 dark:bg-violet-500/10",blue:"bg-blue-50 text-blue-700 dark:bg-blue-500/10",teal:"bg-teal-50 text-teal-700 dark:bg-teal-500/10",green:"bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10",amber:"bg-amber-50 text-amber-700 dark:bg-amber-500/10",red:"bg-red-50 text-red-700 dark:bg-red-500/10"};
+export default async function Dashboard({searchParams}:{searchParams:Promise<{year?:string}>}){
+ const user=await requireUser(),years=await dashboardYears(user.institutionId),requested=(await searchParams).year,year=years.find(x=>x.name===requested)?.name??years.find(x=>x.isActive)?.name??years[0]?.name;
+ const[data,classes,subscription]=await Promise.all([year?dashboardData(user.institutionId,year):null,year?listClassSummaries(user.institutionId,year):[],getSubscription(user.institutionId)]);
+ if(!data)return <Empty text="Add and activate an academic year to use the dashboard." href="/dashboard/settings#academic-years"/>;
+ const totalAttendance=data.present+data.absent,attendanceRate=totalAttendance?Math.round(data.present/totalAttendance*100):0,collectionTotal=Number(data.fees.collected)+Number(data.fees.pending),rawRate=collectionTotal>0?Number(data.fees.collected)/collectionTotal*100:0,rate=Number.isFinite(rawRate)?Math.min(100,Math.max(0,rawRate)):0,rateLabel=rate>0&&rate<1?`${rate.toFixed(1)}%`:`${Math.round(rate)}%`,active=classes.filter(x=>x.status==="Active"),today=new Intl.DateTimeFormat("en-IN",{weekday:"long",day:"numeric",month:"long"}).format(new Date());
+ const stats=[
+  ["Total students",String(data.students),`${active.length} active classes`,GraduationCap,"violet"],["Present today",String(data.present),`${attendanceRate}% attendance rate`,CalendarCheck,"teal"],["Absent today",String(data.absent),totalAttendance?"Live attendance":"Not marked yet",UserRoundX,"red"],["Fees collected",money(data.fees.collected),`${rateLabel} collection rate`,IndianRupee,"green"],["Pending fees",money(data.fees.pending),`${money(data.fees.overdue)} overdue`,ReceiptIndianRupee,"amber"],["Today's collection",money(data.collections.today),`${data.collections.transactions} transactions`,CircleDollarSign,"blue"],
+ ] as const;
+ return <div className="mx-auto max-w-[1500px] pb-10">
+  <header className="dashboard-hero relative overflow-hidden rounded-[1.75rem] border border-violet-100 p-6 shadow-[0_28px_70px_-45px_rgba(79,70,229,.65)] dark:border-violet-900/50 sm:p-8"><div className="absolute -right-16 -top-20 size-64 rounded-full bg-violet-300/20 blur-3xl"/><div className="absolute bottom-0 right-1/3 size-32 rounded-full bg-cyan-300/10 blur-3xl"/><div className="relative grid items-end gap-6 xl:grid-cols-[1fr_260px]"><div><div className="flex flex-wrap items-center gap-3"><span className="label">{today}</span><span className="ui-badge border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"><span aria-hidden="true" className="size-1.5 rounded-full bg-emerald-500"/>School operations · Live</span><span className="ui-badge bg-panel/70 text-muted">Academic year {year}</span></div><h1 className="mt-4 text-3xl font-black tracking-tight sm:text-4xl">Good morning, {user.name}</h1><p className="mt-2 text-sm text-muted sm:text-base">Here&apos;s what&apos;s happening across your school today.</p><div className="mt-6 flex flex-wrap gap-2">{year&&<DashboardYearSelector years={years.map(x=>x.name)} selected={year} canManage={["SCHOOL_ADMIN","SUPER_ADMIN"].includes(user.role)}/>}<a href={`/api/export?type=dashboard&format=pdf&year=${encodeURIComponent(year!)}`} target="_blank" rel="noreferrer" className="btn-secondary"><FileText className="size-4"/>PDF summary</a><Link href="/dashboard/students?add=1" className="btn-primary"><UserPlus className="size-4"/>Add student</Link></div></div><EducationIllustration/></div></header>
+  <SubscriptionCard subscription={subscription}/>
+  <section className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{stats.map(([label,value,note,Icon,tone])=><Stat key={label} label={label} value={value} note={note} icon={Icon} tone={tone}/>)}</section>
+  <Panel title="Quick actions" subtitle="Common school operations, one click away" className="mt-6"><div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">{[["Add student","Create a new profile","/dashboard/students?add=1",UserPlus,"violet"],["Take attendance","Mark today’s roll","/dashboard/attendance",CalendarCheck,"teal"],["Collect fee","Record a payment","/dashboard/payments",IndianRupee,"green"],["Add staff","Grow your team","/dashboard/teachers",UserPlus,"blue"],["Timetable","Plan class periods","/dashboard/timetable",CalendarDays,"amber"],["Reports","Review performance","/dashboard/accounts/reports",FileBarChart,"red"]].map(([label,note,href,Icon,tone])=><Link href={String(href)} key={String(label)} className="group relative min-h-36 overflow-hidden rounded-2xl border bg-canvas/45 p-4 transition duration-200 hover:-translate-y-1 hover:border-violet-300 hover:bg-panel hover:shadow-xl hover:shadow-violet-500/10"><span className={`grid size-10 place-items-center rounded-xl ${tones[tone as keyof typeof tones]}`}><Icon className="size-5"/></span><b className="mt-3 block text-sm">{String(label)}</b><small className="mt-1 block text-[11px] leading-4 text-muted">{String(note)}</small><ArrowRight className="absolute bottom-4 right-4 size-4 text-muted transition group-hover:translate-x-1 group-hover:text-violet-600"/></Link>)}</div></Panel>
+  <DashboardAcademics academicYear={year!}/>
+  <Panel title="Classes overview" subtitle="Live class strength and section coverage" action={<Link href="/dashboard/classes" className="text-sm font-bold text-violet-600">Manage classes →</Link>} className="mt-6"><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{active.map((x,i)=><Link href={`/dashboard/classes/${x.slug}`} key={x.slug} className="group relative overflow-hidden rounded-2xl border bg-gradient-to-br from-panel to-violet-50/50 p-5 transition hover:-translate-y-1 hover:border-violet-300 hover:shadow-xl dark:to-violet-500/5"><div className="flex items-center justify-between"><span className="grid size-10 place-items-center rounded-xl bg-violet-100 text-sm font-black text-violet-700 dark:bg-violet-500/15 dark:text-violet-300">{i+1}</span><ArrowRight className="size-4 text-muted transition group-hover:translate-x-1 group-hover:text-violet-600"/></div><b className="mt-5 block whitespace-nowrap text-lg">{x.name}</b><p className="mt-1 text-xs text-muted">{x.studentCount} students · {x.sectionCount} section{x.sectionCount===1?"":"s"}</p><p className="mt-4 text-xs font-semibold text-violet-700 dark:text-violet-300">{x.classTeacher||"Not assigned"}</p></Link>)}</div>{!active.length&&<EmptyMini icon={GraduationCap} text="Configure classes and sections to see them here."/>}</Panel>
+  <div className="mt-6 grid gap-5 xl:grid-cols-[1.2fr_.8fr]"><Panel title="Finance overview" subtitle={`${rateLabel} collection rate · ${data.collections.transactions} transactions`}><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{([ ["Total fees",data.fees.total,WalletCards,"violet"],["Collected",data.fees.collected,TrendingUp,"green"],["Pending",data.fees.pending,ReceiptIndianRupee,"amber"],["Overdue",data.fees.overdue,TrendingDown,"red"],["Income",data.finance.income,IndianRupee,"blue"],["Expenses",data.finance.expenses,TrendingDown,"red"]] as const).map(([label,value,Icon,tone])=><div className="rounded-2xl bg-canvas/70 p-4" key={label}><span className={`grid size-8 place-items-center rounded-lg ${tones[tone]}`}><Icon className="size-4"/></span><small className="mt-3 block text-muted">{label}</small><b className="block text-lg">{money(value)}</b></div>)}</div></Panel><Ring collected={data.fees.collected} pending={data.fees.pending} rate={rate}/></div>
+  <div className="mt-5 grid gap-5 xl:grid-cols-[1.35fr_.65fr]"><DailyFeeCollectionChart academicYear={year!}/><Panel title="Collection pulse" subtitle="Today and this month"><div className="space-y-3">{[["Today",data.collections.today],["This month",data.collections.month],["Transactions",data.collections.transactions]].map(([x,v])=><div className="flex justify-between rounded-2xl bg-canvas p-4" key={String(x)}><span className="text-sm text-muted">{x}</span><b>{x==="Transactions"?v:money(Number(v))}</b></div>)}</div></Panel></div>
+  <div className="mt-5 grid gap-5 lg:grid-cols-2"><Panel title="Recent fee payments" subtitle="Latest successful transactions" action={<Link href="/dashboard/payment-history" className="text-sm font-bold text-violet-600">View all →</Link>}>{data.recentPayments.length?<div className="divide-y">{data.recentPayments.map(p=><div className="flex justify-between gap-3 py-4" key={p.id}><div className="min-w-0"><b className="text-sm">{p.studentName}</b><p className="truncate text-xs text-muted">{p.className} · {p.section} · {p.method} · {p.paymentDate}</p><small className="text-muted">{p.receiptNumber}</small></div><b className="shrink-0 text-emerald-600">+{money(p.amount)}</b></div>)}</div>:<EmptyMini icon={IndianRupee} text="Payments will appear after the first collection."/>}</Panel><Panel title="Recent activity" subtitle="Database-backed school timeline">{data.activities.length?<div className="space-y-4">{data.activities.map(a=><div className="flex gap-3" key={String(a.id)}><span className="grid size-9 shrink-0 place-items-center rounded-full bg-violet-50 text-violet-600"><Activity className="size-4"/></span><div><b className="text-sm">{String(a.title)}</b><p className="text-xs text-muted">{String(a.description)}</p><small className="text-[11px] text-muted">{new Date(String(a.timestamp)+"Z").toLocaleString("en-IN")}</small></div></div>)}</div>:<EmptyMini icon={Activity} text="School activity will appear here."/>}</Panel></div>
+ </div>;
 }
+function Stat({label,value,note,icon:Icon,tone}:{label:string;value:string;note:string;icon:ElementType;tone:keyof typeof tones}){return <article className="dashboard-card group relative min-h-44 overflow-hidden p-5 transition duration-200 hover:-translate-y-1 hover:border-violet-200 hover:shadow-xl"><span className={`grid size-11 place-items-center rounded-2xl ${tones[tone]}`}><Icon className="size-5"/></span><p className="mt-5 text-[11px] font-black uppercase tracking-[.14em] text-muted">{label}</p><b className="mt-1 block break-words text-2xl font-black tracking-tight">{value}</b><p className="mt-2 text-xs text-muted">{note}</p><span className={`absolute -bottom-8 -right-8 size-24 rounded-full opacity-20 blur-2xl ${tones[tone]}`}/></article>}
+function Panel({title,subtitle,action,className="",children}:{title:string;subtitle:string;action?:ReactNode;className?:string;children:ReactNode}){return <section className={`dashboard-card p-5 sm:p-6 ${className}`}><div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="text-lg font-black tracking-tight">{title}</h2><p className="mt-0.5 text-sm text-muted">{subtitle}</p></div>{action}</div>{children}</section>}
+function Ring({collected,pending,rate}:{collected:number;pending:number;rate:number}){const label=rate>0&&rate<1?`${rate.toFixed(1)}%`:`${Math.round(rate)}%`;return <Panel title="Paid vs pending" subtitle="Fee collection progress"><div className="mx-auto grid size-44 place-items-center rounded-full" style={{background:`conic-gradient(#22c55e 0% ${rate}%,#f59e0b ${rate}% 100%)`}} role="img" aria-label={`${label} collected`}><div className="grid size-32 place-items-center rounded-full bg-panel text-center"><div><b className="text-3xl">{label}</b><small className="block text-muted">Collected</small></div></div></div><div className="mt-5 h-2.5 overflow-hidden rounded-full bg-amber-400" aria-hidden="true"><div className="h-full rounded-full bg-emerald-500 transition-[width] duration-500" style={{width:`${rate}%`}}/></div><div className="mt-4 grid grid-cols-2 gap-2"><div className="rounded-xl bg-emerald-50 p-3 text-emerald-800"><small>Collected</small><b className="block">{money(collected)}</b></div><div className="rounded-xl bg-amber-50 p-3 text-amber-800"><small>Pending</small><b className="block">{money(pending)}</b></div></div></Panel>}
+function EmptyMini({icon:Icon,text}:{icon:ElementType;text:string}){return <div className="grid min-h-36 place-items-center rounded-2xl border border-dashed bg-canvas/50 p-5 text-center"><div><Icon className="mx-auto size-7 text-violet-400"/><p className="mt-2 text-sm text-muted">{text}</p></div></div>}
+function Empty({text,href}:{text:string;href:string}){return <div className="card mx-auto max-w-xl p-10 text-center"><CalendarCheck className="mx-auto size-9 text-violet-500"/><h1 className="mt-4 text-xl font-black">No academic year available</h1><p className="mt-2 text-muted">{text}</p><Link href={href} className="btn-primary mt-5">Manage academic years</Link></div>}
+function EducationIllustration(){return <svg className="mx-auto hidden h-auto w-full max-w-[260px] xl:block" viewBox="0 0 320 210" role="img" aria-label="Illustration of a modern school campus"><defs><linearGradient id="schoolWall" x1="0" y1="0" x2="1" y2="1"><stop stopColor="#6366f1"/><stop offset="1" stopColor="#7c3aed"/></linearGradient><linearGradient id="schoolGlass"><stop stopColor="#67e8f9"/><stop offset="1" stopColor="#bfdbfe"/></linearGradient></defs><ellipse cx="160" cy="190" rx="140" ry="15" fill="#6366f1" opacity=".09"/><circle cx="270" cy="42" r="25" fill="#fbbf24" opacity=".8"/><path d="M48 92 160 30l112 62v93H48Z" fill="url(#schoolWall)"/><path d="m37 94 123-70 123 70-9 15-114-63-114 63Z" fill="#312e81"/><rect x="72" y="101" width="46" height="38" rx="7" fill="url(#schoolGlass)"/><rect x="202" y="101" width="46" height="38" rx="7" fill="url(#schoolGlass)"/><rect x="137" y="89" width="46" height="96" rx="9" fill="#fff"/><rect x="148" y="111" width="24" height="74" rx="5" fill="#c7d2fe"/><path d="M87 101v38m-15-19h46m107-19v38m-15-19h46" stroke="#fff" strokeWidth="4" opacity=".75"/><circle cx="160" cy="68" r="12" fill="#fef3c7"/><path d="M160 60v9l6 4" fill="none" stroke="#7c3aed" strokeLinecap="round" strokeWidth="2.5"/><path d="M20 185h280" stroke="#94a3b8" strokeLinecap="round" strokeWidth="3" opacity=".35"/><g fill="#10b981"><circle cx="43" cy="151" r="18"/><circle cx="278" cy="151" r="18"/><circle cx="28" cy="163" r="13"/><circle cx="293" cy="163" r="13"/></g><path d="M43 163v22m235-22v22" stroke="#92400e" strokeWidth="5"/><g transform="translate(91 161)"><circle cx="0" cy="0" r="7" fill="#f59e0b"/><path d="M0 8v20m-10-10h20M0 28l-9 16m9-16 9 16" stroke="#4338ca" strokeLinecap="round" strokeWidth="5"/></g><g transform="translate(226 161)"><circle cx="0" cy="0" r="7" fill="#fb7185"/><path d="M0 8v20m-10-10h20M0 28l-9 16m9-16 9 16" stroke="#0891b2" strokeLinecap="round" strokeWidth="5"/></g></svg>}

@@ -1,22 +1,34 @@
 import { NextResponse } from "next/server";
-import { deleteStudent, getStudent, updateStudent } from "@/lib/db";
+import { changeStudentStatus, deleteStudent, getStudent, updateStudent } from "@/lib/db";
 import { currentUser } from "@/lib/session";
 import { z } from "zod";
+import { bloodGroupSchema, motherNameSchema } from "@/lib/student-fields";
+import { quotaDescriptionSchema, quotaPairError, specialQuotaSchema } from "@/lib/student-quota";
+import { normalizeWhatsAppNumber } from "@/lib/whatsapp";
 const studentInputSchema = z.object({
   name: z.string().trim().min(2).max(100),
   admission: z.string().trim().min(2).max(40),
   gender: z.enum(["Male", "Female", "Other"]),
+  bloodGroup: bloodGroupSchema,
+  motherName: motherNameSchema,
+  specialQuota: specialQuotaSchema,
+  specialQuotaDescription: quotaDescriptionSchema,
   dateOfBirth: z.string().min(10),
   className: z.string().trim().min(1).max(40),
-  section: z.string().trim().min(1).max(10),
-  rollNumber: z.string().trim().max(30),
+  section: z.string().trim().max(20),
   parent: z.string().trim().min(2).max(100),
-  parentPhone: z.string().trim(),
-  parentEmail: z.string().trim(),
-  address: z.string().trim(),
+  parentPhone: z.string().trim().transform(value=>normalizeWhatsAppNumber(value)),
+  whatsappEnabled: z.boolean(),
+  whatsappAttendance: z.boolean(),
+  whatsappAcademics: z.boolean(),
+  whatsappFees: z.boolean(),
+  whatsappNotices: z.boolean(),
+  whatsappGeneral: z.boolean(),
+  parentEmail: z.union([z.literal(""), z.string().email()]),
+  address: z.string().trim().max(500),
   admissionDate: z.string().min(10),
-  totalFee: z.coerce.number().min(0),
-  academicYear: z.string(),
+  totalFee: z.coerce.number().min(0).max(100000000),
+  academicYear: z.string().trim().min(4).max(20),
   dueDate: z.string(),
 });
 export const runtime = "nodejs";
@@ -50,6 +62,11 @@ export async function PUT(
       { error: parsed.error.issues[0]?.message || "Invalid student details" },
       { status: 400 },
     );
+  const old = await getStudent(user.institutionId, (await params).id);
+  if (!old) return NextResponse.json({ error: "Student not found" }, { status: 404 });
+  if (parsed.data.specialQuota !== undefined && parsed.data.specialQuota !== "Other" && parsed.data.specialQuotaDescription === undefined) parsed.data.specialQuotaDescription = "";
+  const quotaError = quotaPairError(parsed.data.specialQuota ?? old.specialQuota, parsed.data.specialQuotaDescription ?? old.specialQuotaDescription);
+  if (quotaError) return NextResponse.json({ error: quotaError }, { status: 400 });
   try {
     return NextResponse.json({
       student: await updateStudent(
@@ -59,9 +76,11 @@ export async function PUT(
         user.id,
       ),
     });
-  } catch {
+  } catch (error) {
+    const message=error instanceof Error?error.message:"";
+    const safeMessage=/^(Total Fee|Choose a class|Student not found)/.test(message)?message:"Could not update the student.";
     return NextResponse.json(
-      { error: "Could not update the student." },
+      { error: safeMessage },
       { status: 400 },
     );
   }
@@ -88,4 +107,9 @@ export async function DELETE(
       { status: 409 },
     );
   }
+}
+export async function PATCH(request:Request,{params}:{params:Promise<{id:string}>}){
+ const user=await currentUser();if(!user)return NextResponse.json({error:"Unauthenticated"},{status:401});if(!["SCHOOL_ADMIN","SUPER_ADMIN"].includes(user.role))return NextResponse.json({error:"Forbidden"},{status:403});
+ const parsed=z.object({status:z.enum(["Active","Inactive","Left Out","Transferred","Graduated","Archived"]),leavingDate:z.string().min(10).optional(),reason:z.string().trim().max(250).optional(),remarks:z.string().trim().max(500).optional()}).safeParse(await request.json().catch(()=>null));if(!parsed.success)return NextResponse.json({error:parsed.error.issues[0]?.message||"Invalid status change"},{status:400});
+ try{return NextResponse.json({student:await changeStudentStatus(user.institutionId,(await params).id,user.id,parsed.data)})}catch(error){return NextResponse.json({error:error instanceof Error?error.message:"Could not update student status"},{status:400})}
 }

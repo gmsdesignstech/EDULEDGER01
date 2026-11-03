@@ -1,1 +1,1 @@
-import{Payments}from"@/components/payments";export default function Page(){return <Payments history/>}
+import{Payments}from"@/components/payments";import{RecentPaymentFilters}from"@/components/recent-payment-filters";export default function Page(){return <><RecentPaymentFilters/><Payments history/></>}

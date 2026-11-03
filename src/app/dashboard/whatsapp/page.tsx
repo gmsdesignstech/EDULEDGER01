@@ -1,0 +1,1 @@
+import{WhatsAppDashboard}from"@/components/whatsapp-dashboard";import{requireUser}from"@/lib/session";import{notFound}from"next/navigation";export const runtime="nodejs";export default async function Page(){const user=await requireUser();if(!["SCHOOL_ADMIN","SUPER_ADMIN"].includes(user.role))notFound();return <WhatsAppDashboard/>}

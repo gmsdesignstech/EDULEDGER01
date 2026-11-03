@@ -1,16 +1,403 @@
 "use client";
-import{useRouter}from"next/navigation";import{useRef,useState}from"react";import{BadgeCheck,Check,ChevronDown,Loader2,LockKeyhole,ShieldCheck,Sparkles}from"lucide-react";import type{SubscriptionPlan}from"@/lib/subscription-plans";import{formatInr}from"@/lib/subscription-plans";import type{SubscriptionSummary}from"@/lib/db";
-type RazorpayResult={razorpay_order_id:string;razorpay_payment_id:string;razorpay_signature:string};type RazorpayInstance={open:()=>void;on:(event:string,callback:(response:{error?:{description?:string}})=>void)=>void};declare global{interface Window{Razorpay?:new(options:Record<string,unknown>)=>RazorpayInstance}}
-const features=["Complete Student & Staff Record Management","Automated Fee Receipts & Payment Tracking","Invoice Generation & Salary Disbursements","Full Accounts, Cash Book & Audit Logging","Custom School Branding & Logo Settings"];
-async function loadRazorpay(){if(window.Razorpay)return true;const existing=document.querySelector<HTMLScriptElement>('script[src="https://checkout.razorpay.com/v1/checkout.js"]');if(existing)return new Promise<boolean>(resolve=>{existing.addEventListener("load",()=>resolve(true),{once:true});existing.addEventListener("error",()=>resolve(false),{once:true});setTimeout(()=>resolve(Boolean(window.Razorpay)),10000)});return new Promise<boolean>(resolve=>{const script=document.createElement("script");script.src="https://checkout.razorpay.com/v1/checkout.js";script.async=true;script.onload=()=>resolve(true);script.onerror=()=>resolve(false);document.body.appendChild(script)})}
-async function api<T>(url:string,options:RequestInit){let response:Response;try{response=await fetch(url,options)}catch(error){console.error("Payment API request failed",error);throw new Error("Unable to connect to the payment server. Please try again.")}const contentType=response.headers.get("content-type")||"",data=contentType.includes("application/json")?await response.json()as T&{error?:string}:null;if(response.status===401)throw new Error("Your session has expired. Please sign in again.");if(!response.ok&&response.status!==202)throw new Error(data?.error||"Unable to create payment order.");return{response,data}}
-export function ActivationPanel({plans,initialPlanId,subscription,schoolName,compact=false,onActivated}:{plans:readonly SubscriptionPlan[];initialPlanId:string;subscription:SubscriptionSummary;schoolName:string;compact?:boolean;onActivated?:()=>void}){const router=useRouter(),busy=useRef(false),[planId,setPlanId]=useState(initialPlanId),[loading,setLoading]=useState(false),[message,setMessage]=useState(""),[retry,setRetry]=useState(false),plan=plans.find(item=>item.id===planId)||plans[0],active=subscription.status==="ACTIVE"||subscription.status==="EXPIRING_SOON";
- async function checkout(){if(busy.current)return;busy.current=true;setLoading(true);setRetry(false);setMessage("");let orderId="";try{if(!await loadRazorpay())throw new Error("Razorpay Checkout could not be loaded. Check your connection and try again.");const{data:order}=await api<{id:string;key:string;amount:number;currency:string;error?:string}>("/api/subscription/order",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({planId:plan.id})});if(!order?.id||!order.key)throw new Error("The payment server returned an invalid order.");orderId=order.id;if(!window.Razorpay)throw new Error("Razorpay Checkout is unavailable.");const instance=new window.Razorpay({key:order.key,amount:order.amount,currency:order.currency,name:"EduLedger",description:`${plan.name} · Annual subscription`,order_id:order.id,prefill:{name:schoolName},retry:{enabled:true,max_count:2},theme:{color:"#2563eb"},modal:{confirm_close:true,ondismiss:()=>{void cancel(order.id);finish("Payment was cancelled. Your account has not been activated.",true)}},handler:async(result:RazorpayResult)=>{setMessage("Confirming your secure payment…");try{const{response,data}=await api<{error?:string}>("/api/payments/verify",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(result)});if(response.status===202){finish(data?.error||"Payment is awaiting capture. Activation will complete automatically.");return}setMessage("Payment successful. Your portal is active.");onActivated?.();router.replace("/dashboard");router.refresh()}catch(error){finish(error instanceof Error?error.message:"Payment verification failed. Please contact support.",true)}}});instance.on("payment.failed",response=>{void cancel(orderId);finish(response.error?.description||"Payment was not completed. Please try again.",true)});instance.open()}catch(error){finish(error instanceof Error?error.message:"Unable to start payment. Please try again.",true)}}
- async function cancel(id:string){if(!id)return;try{await fetch("/api/subscription/cancel",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({orderId:id})})}catch(error){console.error("Could not mark cancelled subscription order",error)}}function finish(text:string,canRetry=false){busy.current=false;setLoading(false);setRetry(canRetry);setMessage(text)}
- const controls=<><PlanSelect plans={plans} value={planId} setValue={setPlanId}/><PlanSummary plan={plan}/>{message&&<StatusMessage message={message}/>}<PayButton loading={loading} plan={plan} checkout={checkout} renewal={active}/>{retry&&<button type="button" onClick={()=>void checkout()} className="mt-3 w-full rounded-xl border border-blue-200 px-4 py-3 text-sm font-extrabold text-blue-700 hover:bg-blue-50">Retry secure payment</button>}<SecureMessage/></>;
- if(compact)return <div>{controls}</div>;return <section className="pb-16 pt-12 sm:pt-16"><div className="text-center"><span className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-xs font-extrabold ${active?"bg-emerald-50 text-emerald-700":"bg-amber-50 text-amber-700"}`}>{active?<BadgeCheck className="size-4"/>:<Sparkles className="size-4"/>}{active?"Account Subscription Active":"Account Currently Unpaid"}</span><h1 className="mx-auto mt-5 max-w-3xl text-3xl font-black tracking-tight sm:text-5xl">{active?"Manage Your Annual Subscription":"Activate Your School Management Portal"}</h1><p className="mx-auto mt-4 max-w-2xl text-sm leading-6 text-slate-500 sm:text-base">{active?`Your ${subscription.planName} is active until ${subscription.expiryDate?new Date(subscription.expiryDate).toLocaleDateString("en-IN",{dateStyle:"long"}):"renewal"}. Select a plan below to renew for another year.`:"Your school is registered. Choose the capacity that fits your institution and complete the annual payment to unlock every module."}</p></div><div className="mx-auto mt-10 grid max-w-5xl gap-6 lg:grid-cols-[1.08fr_.92fr]"><div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-xl shadow-slate-200/50 sm:p-8"><label className="text-sm font-extrabold text-slate-800" htmlFor="subscription-plan">Student-capacity plan</label>{controls}<div className="mt-5 rounded-2xl border border-slate-200 p-4"><div className="flex items-center justify-between gap-3 text-sm"><span className="font-bold text-slate-700">Current student usage</span><b>{subscription.studentUsage} of {active?subscription.studentCapacity:plan.studentLimit} students used</b></div><div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-blue-600" style={{width:`${Math.min(100,subscription.studentUsage/(active&&subscription.studentCapacity?subscription.studentCapacity:plan.studentLimit)*100)}%`}}/></div></div></div><aside className="rounded-3xl border border-slate-200 bg-slate-50 p-6 sm:p-8"><div className="grid size-12 place-items-center rounded-2xl bg-emerald-100 text-emerald-700"><BadgeCheck/></div><h2 className="mt-5 text-xl font-black">Everything your school needs</h2><p className="mt-2 text-sm leading-6 text-slate-500">Every annual plan includes the complete EduLedger platform. Only student capacity changes.</p><ul className="mt-7 space-y-5">{features.map(feature=><li key={feature} className="flex gap-3 text-sm font-semibold leading-6 text-slate-700"><span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-emerald-100 text-emerald-700"><Check className="size-3.5"/></span>{feature}</li>)}</ul></aside></div></section>}
-function PlanSelect({plans,value,setValue}:{plans:readonly SubscriptionPlan[];value:string;setValue:(value:string)=>void}){return <div className="relative mt-2"><select id="subscription-plan" value={value} onChange={e=>setValue(e.target.value)} className="w-full appearance-none rounded-2xl border border-slate-200 bg-white px-4 py-3.5 pr-11 text-sm font-bold text-slate-800 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100">{plans.map(plan=><option value={plan.id} key={plan.id}>{plan.name} — up to {plan.studentLimit.toLocaleString("en-IN")} students — {formatInr(plan.price)}/year</option>)}</select><ChevronDown className="pointer-events-none absolute right-4 top-4 size-5 text-slate-400"/></div>}
-function PlanSummary({plan}:{plan:SubscriptionPlan}){return <div className="mt-5 rounded-2xl border border-blue-100 bg-blue-50 p-5"><p className="text-xs font-extrabold uppercase tracking-[.14em] text-blue-700">Selected annual plan</p><div className="mt-3 flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><h2 className="text-xl font-black text-slate-900">{plan.name}</h2><p className="mt-1 text-sm font-semibold text-slate-600">Up to {plan.studentLimit.toLocaleString("en-IN")} active students</p></div><p className="text-3xl font-black text-blue-700">{formatInr(plan.price)}<span className="text-xs font-bold text-slate-500"> / year</span></p></div></div>}
-function PayButton({loading,plan,checkout,renewal=false}:{loading:boolean;plan:SubscriptionPlan;checkout:()=>Promise<void>;renewal?:boolean}){return <button type="button" disabled={loading} onClick={()=>void checkout()} className="mt-6 flex w-full items-center justify-center gap-2 rounded-2xl bg-blue-600 px-5 py-4 text-base font-extrabold text-white shadow-xl shadow-blue-200 transition hover:bg-blue-700 focus:ring-4 focus:ring-blue-200 disabled:cursor-wait disabled:opacity-70">{loading?<Loader2 className="size-5 animate-spin"/>:<LockKeyhole className="size-5"/>}{loading?"Opening secure checkout…":`${renewal?"Pay & Renew":"Pay"} ${formatInr(plan.price)} ${renewal?"Now":"& Activate Now"}`}</button>}
-function SecureMessage(){return <p className="mt-4 flex items-center justify-center gap-2 text-center text-xs text-slate-500"><ShieldCheck className="size-4 text-emerald-600"/>Secure Razorpay checkout · Activation only after server verification</p>}
-function StatusMessage({message}:{message:string}){const good=message.includes("successful"),bad=/failed|unable|expired|cancelled|rejected|invalid/i.test(message);return <p role="alert" aria-live="polite" className={`mt-4 rounded-xl border p-3 text-sm ${good?"border-emerald-200 bg-emerald-50 text-emerald-700":bad?"border-red-200 bg-red-50 text-red-700":"border-amber-200 bg-amber-50 text-amber-800"}`}>{message}</p>}
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { useRef, useState } from "react";
+import {
+  ArrowRight,
+  Check,
+  Loader2,
+  LockKeyhole,
+  ShieldCheck,
+  Users,
+} from "lucide-react";
+import type { SubscriptionSummary } from "@/lib/db";
+import type { SubscriptionPlan } from "@/lib/subscription-plans";
+import {
+  ANNUAL_PRICE_PER_STUDENT,
+  formatInr,
+  STARTER_ANNUAL_PRICE,
+  STARTER_PLAN_ID,
+  STARTER_STUDENT_LIMIT,
+  annualSubscriptionPlan,
+} from "@/lib/subscription-plans";
+import { parseApiResponse } from "@/lib/api-response";
+type RazorpayResult = {
+  razorpay_order_id: string;
+  razorpay_payment_id: string;
+  razorpay_signature: string;
+};
+type RazorpayInstance = {
+  open: () => void;
+  on: (
+    event: string,
+    callback: (response: { error?: { description?: string } }) => void,
+  ) => void;
+};
+declare global {
+  interface Window {
+    Razorpay?: new (options: Record<string, unknown>) => RazorpayInstance;
+  }
+}
+async function loadRazorpay() {
+  if (window.Razorpay) return true;
+  return new Promise<boolean>((resolve) => {
+    const script = document.createElement("script");
+    script.src = "https://checkout.razorpay.com/v1/checkout.js";
+    script.async = true;
+    script.onload = () => resolve(true);
+    script.onerror = () => resolve(false);
+    document.body.appendChild(script);
+  });
+}
+async function api<T>(url: string, options: RequestInit) {
+  const response = await fetch(url, options);
+  const data = await parseApiResponse<T & { error?: string }>(
+    response,
+    "The payment server could not complete this request. Please try again.",
+  );
+  return { response, data };
+}
+export function ActivationPanel({
+  subscription,
+  schoolName,
+  compact = false,
+  onActivated,
+  successHref = "/dashboard",
+  initialPlanId,
+}: {
+  plans: readonly SubscriptionPlan[];
+  initialPlanId: string;
+  subscription: SubscriptionSummary;
+  schoolName: string;
+  compact?: boolean;
+  onActivated?: () => void;
+  successHref?: string;
+}) {
+  const router = useRouter(),
+    busy = useRef(false),
+    [loading, setLoading] = useState(false),
+    [message, setMessage] = useState(""),
+    [success, setSuccess] = useState<SubscriptionSummary | null>(null),
+    count = subscription.billingStudentCount,
+    quote = annualSubscriptionPlan(count),
+    isStarter = quote?.id === STARTER_PLAN_ID,
+    pricePerStudent = quote?.pricePerStudent ?? ANNUAL_PRICE_PER_STUDENT,
+    amount = quote?.price ?? 0,
+    eligible = Boolean(quote);
+  const periodSummary = (
+    <section className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 p-5">
+      <h2 className="font-black text-slate-900">School Subscription Period</h2>
+      <dl className="mt-4 grid gap-3 sm:grid-cols-2">
+        <Summary label="School" value={schoolName} />
+        <Summary
+          label="Subscription Period"
+          value={period(subscription.activationDate, subscription.expiryDate)}
+        />
+        <Summary
+          label="Subscription Start"
+          value={date(subscription.activationDate)}
+        />
+        <Summary
+          label="Subscription End"
+          value={date(subscription.expiryDate)}
+        />
+        <Summary label="Amount" value={eligible ? formatInr(amount) : "Enrollment required"} />
+      </dl>
+    </section>
+  );
+  function finish(text: string) {
+    busy.current = false;
+    setLoading(false);
+    setMessage(text);
+  }
+  async function cancel(id: string) {
+    if (id)
+      await fetch("/api/subscription/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderId: id }),
+      }).catch(() => undefined);
+  }
+  async function checkout() {
+    if (busy.current || !eligible) return;
+    busy.current = true;
+    setLoading(true);
+    setMessage("");
+    let orderId = "";
+    try {
+      if (!(await loadRazorpay()))
+        throw new Error("Secure checkout could not be loaded.");
+      const { data: order } = await api<{
+        id: string;
+        key: string;
+        amount: number;
+        currency: string;
+        verified?: boolean;
+      }>("/api/subscription/order", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      orderId = order.id;
+      if(order.verified){
+        busy.current=false;
+        setLoading(false);
+        router.replace(`/payment/success?product=subscription&order=${encodeURIComponent(orderId)}&next=${encodeURIComponent(successHref)}`);
+        router.refresh();
+        return;
+      }
+      if (!window.Razorpay) throw new Error("Secure checkout is unavailable.");
+      const instance = new window.Razorpay({
+        key: order.key,
+        amount: order.amount,
+        currency: order.currency,
+        name: "EduLedger",
+        description: isStarter
+          ? "EduLedger Starter · fixed annual school subscription"
+          : `Annual subscription · ${count} students`,
+        order_id: order.id,
+        prefill: { name: schoolName },
+        retry: { enabled: true, max_count: 2 },
+        theme: { color: "#059669" },
+        modal: {
+          confirm_close: true,
+          ondismiss: () =>
+            finish("Payment was cancelled. You can retry when ready."),
+        },
+        handler: async (result: RazorpayResult) => {
+          try {
+            const { response, data } = await api<{
+              error?: string;
+              subscription?: SubscriptionSummary;
+            }>("/api/payments/verify", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(result),
+            });
+            if (response.status === 202)
+              return finish(data.error || "Payment is awaiting confirmation.");
+            if (data.subscription) {
+              busy.current = false;
+              setLoading(false);
+              onActivated?.();
+              router.replace(`/payment/success?product=subscription&order=${encodeURIComponent(orderId)}&next=${encodeURIComponent(successHref)}`);
+              router.refresh();
+            } else finish("Payment verification is still pending.");
+          } catch (error) {
+            finish(
+              error instanceof Error
+                ? error.message
+                : "Payment verification failed.",
+            );
+          }
+        },
+      });
+      instance.on("payment.failed", (response) => {
+        void cancel(orderId);
+        finish(
+          response.error?.description ||
+            "Payment was not completed. Please retry.",
+        );
+      });
+      instance.open();
+    } catch (error) {
+      finish(
+        error instanceof Error ? error.message : "Unable to start payment.",
+      );
+    }
+  }
+  if (success)
+    return (
+      <section className="mx-auto my-12 max-w-xl rounded-[2rem] border border-emerald-200 bg-white p-8 text-center shadow-xl">
+        <span className="mx-auto grid size-16 place-items-center rounded-full bg-emerald-100 text-emerald-700">
+          <Check className="size-8" />
+        </span>
+        <h1 className="mt-5 text-3xl font-black text-slate-950">
+          Payment Successful
+        </h1>
+        <p className="mt-2 text-slate-600">
+          {schoolName}&apos;s EduLedger subscription payment was verified.
+        </p>
+        <dl className="mt-7 grid grid-cols-2 gap-3 text-left">
+          <Summary
+            label="Students at purchase"
+            value={String(
+              success.studentCountAtPurchase || success.studentUsage,
+            )}
+          />
+          <Summary
+            label="Pricing"
+            value={
+              success.pricingModel === "FIXED"
+                ? "Fixed annual school fee"
+                : `${formatInr(success.pricePerStudent)} / student / year`
+            }
+          />
+          <Summary label="Amount paid" value={formatInr(success.amountPaid)} />
+          <Summary
+            label="Payment ID"
+            value={success.razorpayPaymentId || "Verified"}
+          />
+          <Summary label="Valid until" value={date(success.expiryDate)} />
+        </dl>
+        <button
+          onClick={() => {
+            router.replace(successHref);
+            router.refresh();
+          }}
+          className="mt-7 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-5 py-4 font-extrabold text-white"
+        >
+          Continue <ArrowRight className="size-4" />
+        </button>
+      </section>
+    );
+  const card = (
+    <section data-initial-plan={initialPlanId} className="rounded-[2rem] border border-emerald-100 bg-white p-6 shadow-xl sm:p-8">
+      <span className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-black uppercase tracking-wider text-emerald-700">
+        <Users className="size-4" />
+        {isStarter ? "EduLedger Starter" : "EduLedger annual subscription"}
+      </span>
+      <h2 className="mt-5 text-3xl font-black text-slate-950">
+        {!eligible
+          ? "Complete enrollment setup"
+          : isStarter
+          ? `${formatInr(STARTER_ANNUAL_PRICE)} per academic year`
+          : `${formatInr(pricePerStudent)} per student / year`}
+      </h2>
+      <p className="mt-2 text-sm text-slate-500">
+        {!eligible
+          ? "Checkout unlocks after the school has a persisted expected enrollment or at least one active student."
+          : isStarter
+          ? "1–100 eligible students: fixed ₹10,000 per academic year. More than 100 eligible students: ₹100 per student per academic year."
+          : "₹100 per eligible student per academic year for schools with more than 100 eligible students."}
+      </p>
+      <dl className="mt-7 grid gap-3 rounded-3xl border bg-slate-50 p-5 sm:grid-cols-2">
+        <Summary
+          label="Eligible students for billing"
+          value={count ? count.toLocaleString("en-IN") : "Not configured"}
+        />
+        <Summary
+          label="Plan limit"
+          value={
+            isStarter
+              ? "Up to 100 eligible students"
+              : eligible
+                ? `${subscription.studentCapacity || count} students`
+                : "Not established"
+          }
+        />
+        <Summary label="Billing interval" value="One academic year" />
+        <Summary label="Taxes" value="No separate tax configured" />
+        <div className="sm:col-span-2">
+          <Summary label="Final payable amount" value={eligible ? formatInr(amount) : "Enrollment required"} />
+        </div>
+      </dl>
+      {isStarter && count >= 90 && eligible && (
+        <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          Your school has {count} of {STARTER_STUDENT_LIMIT} Starter student places in use.
+        </p>
+      )}
+      {!count && (
+        <div
+          role="alert"
+          className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"
+        >
+          <p>Enter the school&apos;s expected enrollment during registration, or add an active student, before starting checkout.</p>
+          <Link href="/dashboard/settings" className="mt-3 inline-flex rounded-lg bg-amber-900 px-3 py-2 text-xs font-bold text-white">Complete school setup</Link>
+        </div>
+      )}
+      {count > STARTER_STUDENT_LIMIT && isStarter && (
+        <p
+          role="alert"
+          className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-800"
+        >
+          Your school has {count} eligible students and is not eligible for
+          Starter. Select an eligible higher-capacity plan. No automatic upgrade
+          or additional charge will occur.
+        </p>
+      )}
+      {message && (
+        <p
+          role="alert"
+          className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"
+        >
+          {message}
+        </p>
+      )}
+      <button
+        disabled={loading || !eligible}
+        onClick={() => void checkout()}
+        className="mt-6 flex min-h-14 w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-5 font-extrabold text-white disabled:opacity-60"
+      >
+        {loading ? (
+          <Loader2 className="size-5 animate-spin" />
+        ) : (
+          <LockKeyhole className="size-5" />
+        )}
+        {loading
+          ? "Opening secure checkout…"
+          : eligible
+            ? isStarter
+              ? `Choose Starter · ${formatInr(amount)}`
+              : `Continue with existing plan · ${formatInr(amount)}`
+            : "Enrollment required"}
+      </button>
+      <p className="mt-4 flex items-center justify-center gap-2 text-xs font-semibold text-slate-500">
+        <ShieldCheck className="size-4 text-emerald-600" />
+        Eligibility and payment amount are verified by the server before
+        Razorpay checkout
+      </p>
+    </section>
+  );
+  if (compact)
+    return (
+      <>
+        {periodSummary}
+        {card}
+      </>
+    );
+  return (
+    <section className="pb-16 pt-12">
+      <div className="mx-auto max-w-2xl text-center">
+        <p className="text-xs font-black uppercase tracking-[.18em] text-emerald-700">
+          EduLedger Payment
+        </p>
+        <h1 className="mt-3 text-4xl font-black text-slate-950">
+          Annual Subscription Checkout
+        </h1>
+        <p className="mt-3 text-slate-500">
+          Review the school, selected subscription period, student count and
+          total before continuing to Razorpay.
+        </p>
+      </div>
+      <div className="mx-auto mt-9 max-w-xl">
+        {periodSummary}
+        {card}
+      </div>
+    </section>
+  );
+}
+function Summary({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl bg-slate-50 p-4">
+      <dt className="text-xs font-bold uppercase text-slate-500">{label}</dt>
+      <dd className="mt-1 font-black text-slate-900">{value}</dd>
+    </div>
+  );
+}
+function date(value: string | null) {
+  return value
+    ? new Intl.DateTimeFormat("en-IN", { dateStyle: "medium", timeZone: "UTC" }).format(
+        new Date(value),
+      )
+    : "—";
+}
+function period(start: string | null, end: string | null) {
+  if (!start || !end) return "Not selected";
+  const format = new Intl.DateTimeFormat("en-IN", {
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+  return `${format.format(new Date(start))} – ${format.format(new Date(end))}`;
+}

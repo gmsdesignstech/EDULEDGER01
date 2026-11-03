@@ -6,6 +6,7 @@ export async function GET(request: Request) {
   const user = await currentUser();
   if (!user)
     return NextResponse.json({ error: "Unauthenticated" }, { status: 401 });
+  if(!["SCHOOL_ADMIN","SUPER_ADMIN","ACCOUNTANT"].includes(user.role))return NextResponse.json({error:"Forbidden"},{status:403});
   const q = new URL(request.url).searchParams;
   return NextResponse.json({
     fees: await listFees(user.institutionId, {
@@ -13,6 +14,7 @@ export async function GET(request: Request) {
       className: q.get("class") || undefined,
       section: q.get("section") || undefined,
       status: q.get("status") || undefined,
+      academicYear:q.get("year")||undefined,
     }),
   });
 }

@@ -9,7 +9,20 @@ export function paymentErrorMessage(error:unknown){
 }
 export function verifyRazorpaySignature(orderId:string,paymentId:string,signature:string,secret:string){const expected=createHmac("sha256",secret).update(`${orderId}|${paymentId}`).digest("hex"),a=Buffer.from(expected),b=Buffer.from(signature);return a.length===b.length&&timingSafeEqual(a,b)}
 function credentials(){const key=process.env.RAZORPAY_KEY_ID?.trim(),secret=process.env.RAZORPAY_KEY_SECRET?.trim();if(!key||!secret||!/^rzp_(test|live)_/.test(key))throw new PaymentServiceError("NOT_CONFIGURED","Payment service is not configured. Please contact the administrator.");return{key,authorization:`Basic ${Buffer.from(`${key}:${secret}`).toString("base64")}`}}
+export function razorpayPublicKey(){return credentials().key}
 async function razorpay<T>(path:string,init:RequestInit={}){const auth=credentials();let response:Response;try{response=await fetch(`https://api.razorpay.com/v1${path}`,{...init,headers:{Authorization:auth.authorization,"Content-Type":"application/json",...init.headers},signal:AbortSignal.timeout(15000),cache:"no-store"})}catch(error){console.error("Razorpay network request failed",error instanceof Error?{name:error.name,message:error.message,cause:String(error.cause||"")}:error);throw new PaymentServiceError("UNREACHABLE","Unable to connect to the payment server. Check your internet connection and try again.")}
  const text=await response.text();let data:unknown;try{data=text?JSON.parse(text):{}}catch{throw new PaymentServiceError("INVALID_RESPONSE","The payment provider returned an invalid response. Please try again.",502)}if(!response.ok){const provider=data as{error?:{description?:string;reason?:string}};console.error("Razorpay rejected request",{status:response.status,reason:provider.error?.reason});const message=response.status===401?"Payment credentials were rejected. Please contact the administrator.":provider.error?.description||"The payment provider could not process this request.";throw new PaymentServiceError("PROVIDER_REJECTED",message,response.status>=500?502:400)}return{data:data as T,key:auth.key}}
 export async function createRazorpayOrder(input:{amount:number;receipt:string;notes:Record<string,string>}){const{data,key}=await razorpay<{id?:string;amount?:number;currency?:string}>("/orders",{method:"POST",body:JSON.stringify({amount:input.amount,currency:"INR",receipt:input.receipt,notes:input.notes,payment_capture:1})});if(!data.id||data.amount!==input.amount||data.currency!=="INR")throw new PaymentServiceError("INVALID_RESPONSE","The payment order response could not be validated.",502);return{id:data.id,amount:data.amount,currency:data.currency,key}}
-export async function getRazorpayPayment(paymentId:string){const{data}=await razorpay<{id:string;order_id:string;amount:number;currency:string;status:string;captured:boolean}>(`/payments/${encodeURIComponent(paymentId)}`);return data}
+export async function getRazorpayPayment(paymentId:string){
+ let lastError:unknown;
+ for(let attempt=0;attempt<3;attempt++){
+  try{const{data}=await razorpay<{id:string;order_id:string;amount:number;currency:string;status:string;captured:boolean}>(`/payments/${encodeURIComponent(paymentId)}`);return data}
+  catch(error){lastError=error;const transient=error instanceof PaymentServiceError&&(error.code==="UNREACHABLE"||error.status>=500);if(!transient||attempt===2)throw error;await new Promise(resolve=>setTimeout(resolve,350*(attempt+1)))}
+ }
+ throw lastError;
+}
+export async function getCapturedRazorpayPaymentForOrder(orderId:string){
+ const{data}=await razorpay<{items?:Array<{id:string;order_id:string;amount:number;currency:string;status:string;captured:boolean}>}>(`/orders/${encodeURIComponent(orderId)}/payments`);
+ const items=Array.isArray(data.items)?data.items:[];
+ return items.find(payment=>payment.order_id===orderId&&(payment.status==="captured"||payment.captured));
+}

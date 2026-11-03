@@ -1,1 +1,3 @@
-import{AuthForm}from"@/components/auth-form";export default function Page(){return <AuthForm mode="login"/>}
+import type{Metadata}from"next";import{redirect}from"next/navigation";import{AuthForm}from"@/components/auth-form";import{currentUser}from"@/lib/session";import{roleHome,safeSchoolRedirect}from"@/lib/auth-redirect";
+export const metadata:Metadata={title:"School Administrator Sign In | EduLedger",robots:{index:false,follow:true}};
+export default async function Page({searchParams}:{searchParams:Promise<{next?:string}>}){const query=await searchParams,next=safeSchoolRedirect(query.next),user=await currentUser();if(user)redirect(user.role==="SCHOOL_ADMIN"?next:roleHome(user.role));return <AuthForm mode="login" afterLoginHref={next}/>}

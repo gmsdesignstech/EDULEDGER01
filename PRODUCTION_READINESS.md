@@ -35,7 +35,7 @@ Last audited: 2026-09-13
 
 These require production infrastructure or broader product decisions and are not verified locally:
 
-1. Configure hosted PostgreSQL through `DATABASE_URL` or `POSTGRES_URL`; the current local environment has no production database URL.
+1. Configure hosted PostgreSQL through `DATABASE_URL`; the current local environment has no production database URL.
 2. Configure and test live Razorpay credentials and the HTTPS webhook in a staging account before accepting money.
 3. Enable managed database point-in-time recovery and complete a restore drill. No backup has been restored during this audit.
 4. Add a distributed rate limiter for login and registration (for example, an edge-compatible Redis service). An in-memory limiter is intentionally not presented as production protection because it fails across serverless instances.
@@ -60,4 +60,3 @@ A production release is approved only after all of the following pass in staging
 3. Registration, login, logout, tenant isolation, student creation, fee collection, receipt PDF, report PDF, and Razorpay webhook smoke tests pass.
 4. A database backup is created and restored into an isolated staging database.
 5. Rollback of the deployed application version is rehearsed without rolling back committed financial data.
-

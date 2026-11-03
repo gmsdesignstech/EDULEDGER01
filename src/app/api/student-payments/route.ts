@@ -6,15 +6,22 @@ export const runtime = "nodejs";
 const schema = z.object({
   feeId: z.string().uuid(),
   amount: z.coerce.number().positive(),
-  method: z.enum(["Cash", "UPI", "Card", "Bank Transfer", "Online", "Other"]),
+  method: z.enum(["Cash", "UPI", "Card", "Bank Transfer", "Cheque", "Online", "Other"]),
+  frequency:z.enum(["Daily","Weekly","Monthly","Quarterly","Half-Yearly","Yearly","Custom"]).default("Custom"),
+  discountType:z.enum(["Fixed","Percentage"]).default("Fixed"),
+  discountValue:z.coerce.number().min(0).max(100000000).default(0),
+  discountReason:z.string().trim().max(250).default(""),
+  lateFee:z.coerce.number().min(0).max(100000000).default(0),
   paymentDate: z.string().min(10),
   transactionId: z.string().trim().max(100).default(""),
   notes: z.string().trim().max(500).default(""),
+  requestId:z.string().uuid().optional(),
 });
 export async function GET(request: Request) {
   const user = await currentUser();
   if (!user)
     return NextResponse.json({ error: "Unauthenticated" }, { status: 401 });
+  if(!["SCHOOL_ADMIN","SUPER_ADMIN","ACCOUNTANT"].includes(user.role))return NextResponse.json({error:"Forbidden"},{status:403});
   const q = new URL(request.url).searchParams;
   return NextResponse.json({
     payments: await listPayments(user.institutionId, {
@@ -26,6 +33,7 @@ export async function GET(request: Request) {
       from: q.get("from") || undefined,
       to: q.get("to") || undefined,
       studentId: q.get("studentId") || undefined,
+      academicYear:q.get("year")||undefined,
     }),
   });
 }
