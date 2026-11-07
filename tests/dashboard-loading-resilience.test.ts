@@ -57,4 +57,33 @@ describe("Dashboard Page Loading Resilience & Decoupled Schema Suite", () => {
     expect(errorSource).toContain("error.digest");
     expect(errorSource).toContain("Try again");
   });
+
+  it("verifies ensureEssentialProductionSchema and ensureTimetableSchema are exported and cover timetable columns", () => {
+    const dbSource = fs.readFileSync(path.join(process.cwd(), "src/lib/db.ts"), "utf-8");
+
+    expect(dbSource).toContain("export async function ensureEssentialProductionSchema");
+    expect(dbSource).toContain("export async function ensureTimetableSchema");
+    expect(dbSource).toContain("ALTER TABLE settings ADD COLUMN IF NOT EXISTS timetable_start_time TEXT");
+    expect(dbSource).toContain("ALTER TABLE timetable_entries ADD COLUMN IF NOT EXISTS generated BOOLEAN");
+    expect(dbSource).toContain("ALTER TABLE timetable_entries ADD COLUMN IF NOT EXISTS status TEXT");
+    expect(dbSource).toContain("idx_timetable_active_slot");
+  });
+
+  it("verifies getTimetableSettings and listTimetableEntries contain resilient fallbacks", () => {
+    const dbSource = fs.readFileSync(path.join(process.cwd(), "src/lib/db.ts"), "utf-8");
+
+    const getTimetableSettingsMatch = dbSource.match(/export async function getTimetableSettings\([\s\S]*?\n\}/);
+    expect(getTimetableSettingsMatch).toBeTruthy();
+    expect(getTimetableSettingsMatch![0]).toContain("ensureTimetableSchema");
+    expect(getTimetableSettingsMatch![0]).toContain("defaultTimetableSettings");
+
+    const listEntriesMatch = dbSource.match(/export async function listTimetableEntries\([\s\S]*?\n\}/);
+    expect(listEntriesMatch).toBeTruthy();
+    expect(listEntriesMatch![0]).toContain("ensureTimetableSchema");
+    expect(listEntriesMatch![0]).toContain("COALESCE(t.status");
+
+    const routeSource = fs.readFileSync(path.join(process.cwd(), "src/app/api/timetable/route.ts"), "utf-8");
+    expect(routeSource).toContain("ensureTimetableSchema");
+  });
 });
+

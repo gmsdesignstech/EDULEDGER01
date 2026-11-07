@@ -468,12 +468,30 @@ CREATE INDEX IF NOT EXISTS idx_staff_attendance_person ON staff_attendance(insti
   return initializing;
 }
 
-let paymentSchemaPromise: Promise<void> | null = null;
-export async function ensurePaymentSettingsSchema(customDb?: Sql): Promise<void> {
-  if (paymentSchemaPromise) return paymentSchemaPromise;
-  paymentSchemaPromise = (async () => {
+let essentialSchemaPromise: Promise<void> | null = null;
+export async function ensureEssentialProductionSchema(customDb?: Sql): Promise<void> {
+  if (essentialSchemaPromise) return essentialSchemaPromise;
+  essentialSchemaPromise = (async () => {
     const db = customDb || (await ready());
     await db.unsafe(`
+      -- Timetable settings columns in settings table
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS timetable_start_time TEXT NOT NULL DEFAULT '09:00';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS timetable_end_time TEXT NOT NULL DEFAULT '16:00';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS timetable_period_minutes INTEGER NOT NULL DEFAULT 40;
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS timetable_short_break_minutes INTEGER NOT NULL DEFAULT 15;
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS timetable_lunch_minutes INTEGER NOT NULL DEFAULT 40;
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS timetable_periods_per_day INTEGER NOT NULL DEFAULT 9;
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS timetable_working_days TEXT NOT NULL DEFAULT '1,2,3,4,5';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS timetable_timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata';
+
+      -- Timetable entries columns & indexes
+      ALTER TABLE timetable_entries ADD COLUMN IF NOT EXISTS generated BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE timetable_entries ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'Published';
+      ALTER TABLE timetable_entries DROP CONSTRAINT IF EXISTS timetable_entries_institution_id_class_name_section_academic_year_weekday_start_time_key;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_timetable_active_slot ON timetable_entries(institution_id,class_name,section,academic_year,weekday,start_time) WHERE status<>'Archived';
+      CREATE INDEX IF NOT EXISTS idx_timetable_published_scope ON timetable_entries(institution_id,academic_year,class_name,section,weekday,start_time) WHERE status='Published';
+
+      -- Payment settings columns in settings table
       ALTER TABLE settings ADD COLUMN IF NOT EXISTS upi_enabled BOOLEAN NOT NULL DEFAULT FALSE;
       ALTER TABLE settings ADD COLUMN IF NOT EXISTS upi_id TEXT NOT NULL DEFAULT '';
       ALTER TABLE settings ADD COLUMN IF NOT EXISTS payee_name TEXT NOT NULL DEFAULT '';
@@ -483,6 +501,7 @@ export async function ensurePaymentSettingsSchema(customDb?: Sql): Promise<void>
       ALTER TABLE settings ADD COLUMN IF NOT EXISTS ifsc_code TEXT NOT NULL DEFAULT '';
       ALTER TABLE settings ADD COLUMN IF NOT EXISTS payment_instructions TEXT NOT NULL DEFAULT '';
 
+      -- School QR payments table & indexes
       CREATE TABLE IF NOT EXISTS school_qr_payments(
         id TEXT PRIMARY KEY,
         institution_id TEXT NOT NULL REFERENCES institutions(id) ON DELETE CASCADE,
@@ -506,12 +525,51 @@ export async function ensurePaymentSettingsSchema(customDb?: Sql): Promise<void>
       CREATE INDEX IF NOT EXISTS idx_school_qr_payments_student ON school_qr_payments(institution_id, student_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_school_qr_payments_utr ON school_qr_payments(institution_id, utr_number);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_school_qr_payments_utr_upper ON school_qr_payments(institution_id, UPPER(utr_number));
+
+      -- School branding and settings columns
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS school_code TEXT NOT NULL DEFAULT '';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS dise_code TEXT NOT NULL DEFAULT '';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS website TEXT NOT NULL DEFAULT '';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS city TEXT NOT NULL DEFAULT '';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS state TEXT NOT NULL DEFAULT '';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS pin_code TEXT NOT NULL DEFAULT '';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS principal_name TEXT NOT NULL DEFAULT '';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS registration_number TEXT NOT NULL DEFAULT '';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS affiliation TEXT NOT NULL DEFAULT '';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS motto TEXT NOT NULL DEFAULT '';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS school_type TEXT NOT NULL DEFAULT '';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS fee_receipt_title TEXT NOT NULL DEFAULT 'Fee Payment Receipt';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS fee_receipt_subheader TEXT NOT NULL DEFAULT 'Standard Fee Receipt Template';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS payslip_title TEXT NOT NULL DEFAULT 'Pay Slip';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS payslip_subheader TEXT NOT NULL DEFAULT 'Standard Pay Slip Template';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS footer_text TEXT NOT NULL DEFAULT '';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS signature_label TEXT NOT NULL DEFAULT 'Authorized Signatory';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS attendance_correction_window_hours INTEGER NOT NULL DEFAULT 24;
+
+      -- Students table columns
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS photo_path TEXT;
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS blood_group TEXT;
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS mother_name TEXT;
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS special_quota TEXT;
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS special_quota_description TEXT;
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS academic_year TEXT NOT NULL DEFAULT '';
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS leaving_date TEXT;
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS leaving_reason TEXT NOT NULL DEFAULT '';
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS graduation_date TEXT;
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS leaving_remarks TEXT NOT NULL DEFAULT '';
     `);
   })().catch((err) => {
-    paymentSchemaPromise = null;
+    essentialSchemaPromise = null;
     throw err;
   });
-  return paymentSchemaPromise;
+  return essentialSchemaPromise;
+}
+
+export async function ensurePaymentSettingsSchema(customDb?: Sql): Promise<void> {
+  return ensureEssentialProductionSchema(customDb);
+}
+export async function ensureTimetableSchema(customDb?: Sql): Promise<void> {
+  return ensureEssentialProductionSchema(customDb);
 }
 
 async function ready() {
@@ -522,8 +580,8 @@ async function ready() {
   if (process.env.NODE_ENV !== "production") {
     await initialize();
   } else {
-    // Non-blocking background check so payment schema self-heals without delaying production cold requests
-    ensurePaymentSettingsSchema(sql).catch(() => {});
+    // Non-blocking background check so essential schema self-heals without delaying production cold requests
+    ensureEssentialProductionSchema(sql).catch(() => {});
   }
   return sql;
 }
@@ -1211,7 +1269,9 @@ export async function teacherPortalScope(institutionId:string,email:string){
   const teachers=await rows<DbTeacher>(`SELECT id,name,employee_id AS "employeeId",email,phone,department,subject,assigned_classes AS classes,joining_date AS "joiningDate",salary,status,created_at::text AS "createdAt" FROM teachers WHERE institution_id=? AND LOWER(TRIM(email))=LOWER(TRIM(?)) AND status='Active' ORDER BY created_at`,[institutionId,email],db);
   if(teachers.length!==1)throw new Error(teachers.length?"Teacher account is linked to multiple active staff records.":"Teacher account is not linked to an active staff record.");
   const teacher=teachers[0];
-  const timetable=await rows<{id:string;academicYear:string;className:string;section:string;subject:string;weekday:number;startTime:string;endTime:string}>(`SELECT id,academic_year AS "academicYear",class_name AS "className",section,subject,weekday,start_time AS "startTime",end_time AS "endTime" FROM timetable_entries WHERE institution_id=? AND teacher_id=? AND status='Published' ORDER BY weekday,start_time,class_name,section`,[institutionId,teacher.id],db);
+  const timetable=await rows<{id:string;academicYear:string;className:string;section:string;subject:string;weekday:number;startTime:string;endTime:string}>(`SELECT id,academic_year AS "academicYear",class_name AS "className",section,subject,weekday,start_time AS "startTime",end_time AS "endTime" FROM timetable_entries WHERE institution_id=? AND teacher_id=? AND COALESCE(status, 'Published')='Published' ORDER BY weekday,start_time,class_name,section`,[institutionId,teacher.id],db).catch(async () => {
+    return rows<{id:string;academicYear:string;className:string;section:string;subject:string;weekday:number;startTime:string;endTime:string}>(`SELECT id,academic_year AS "academicYear",class_name AS "className",section,subject,weekday,start_time AS "startTime",end_time AS "endTime" FROM timetable_entries WHERE institution_id=? AND teacher_id=? ORDER BY weekday,start_time,class_name,section`,[institutionId,teacher.id],db).catch(() => []);
+  });
   const unique=new Map<string,TeacherPortalAssignment>();
   for(const item of timetable){
     const assignment={academicYear:item.academicYear,className:item.className,section:item.section,subject:item.subject};
@@ -3647,7 +3707,7 @@ export async function getClassWorkspace(institutionId: string, slug: string, aca
     listAttendance(institutionId, { className: definition.name, academicYear:year }),
     listFees(institutionId, { className: definition.name, academicYear:year }),
     listPayments(institutionId, { className: definition.name, academicYear:year }),
-    rows('SELECT t.id,t.section,t.subject,t.weekday,t.start_time AS "startTime",t.end_time AS "endTime",COALESCE(te.name,\'Unassigned\') AS "teacherName",t.teacher_id AS "teacherId" FROM timetable_entries t LEFT JOIN teachers te ON te.id=t.teacher_id AND te.institution_id=t.institution_id WHERE t.institution_id=? AND t.class_name=? AND t.academic_year=? AND t.status<>\'Archived\' ORDER BY t.weekday,t.start_time', [institutionId, definition.name, year], await ready()),
+    rows('SELECT t.id,t.section,t.subject,t.weekday,t.start_time AS "startTime",t.end_time AS "endTime",COALESCE(te.name,\'Unassigned\') AS "teacherName",t.teacher_id AS "teacherId" FROM timetable_entries t LEFT JOIN teachers te ON te.id=t.teacher_id AND te.institution_id=t.institution_id WHERE t.institution_id=? AND t.class_name=? AND t.academic_year=? AND COALESCE(t.status,\'Published\')<>\'Archived\' ORDER BY t.weekday,t.start_time', [institutionId, definition.name, year], await ready()).catch(() => []),
     rows('SELECT id,name,exam_date AS "examDate",section,subject,max_marks AS "maxMarks",passing_marks AS "passingMarks" FROM class_exams WHERE institution_id=? AND class_name=? AND academic_year=? ORDER BY exam_date DESC', [institutionId, definition.name, year], await ready()),
     rows('SELECT r.id,r.exam_id AS "examId",r.student_id AS "studentId",s.name AS "studentName",e.subject,r.marks,r.grade,r.status FROM class_results r JOIN students s ON s.id=r.student_id AND s.institution_id=r.institution_id JOIN class_exams e ON e.id=r.exam_id AND e.institution_id=r.institution_id WHERE r.institution_id=? AND e.class_name=? AND e.academic_year=? ORDER BY e.exam_date DESC,s.name', [institutionId, definition.name, year], await ready()),
   ]);
@@ -3697,15 +3757,51 @@ export async function addTimetableEntry(institutionId: string, className: string
 
 export async function getTimetableSettings(institutionId: string): Promise<TimetableSettings> {
   const db = await ready();
-  const item = await row<{startTime:string;endTime:string;periodMinutes:number;shortBreakMinutes:number;lunchMinutes:number;periodsPerDay:number;workingDays:string;timezone:string}>('SELECT timetable_start_time AS "startTime",timetable_end_time AS "endTime",timetable_period_minutes AS "periodMinutes",timetable_short_break_minutes AS "shortBreakMinutes",timetable_lunch_minutes AS "lunchMinutes",timetable_periods_per_day AS "periodsPerDay",timetable_working_days AS "workingDays",timetable_timezone AS timezone FROM settings WHERE institution_id=?',[institutionId],db);
-  if (!item) return defaultTimetableSettings;
-  return { startTime:item.startTime,endTime:item.endTime,periodMinutes:Number(item.periodMinutes),shortBreakMinutes:Number(item.shortBreakMinutes),lunchMinutes:Number(item.lunchMinutes),periodsPerDay:Number(item.periodsPerDay),workingDays:String(item.workingDays).split(",").map(Number),timezone:item.timezone };
+  await ensureTimetableSchema(db).catch(() => {});
+  try {
+    const item = await row<{
+      startTime: string;
+      endTime: string;
+      periodMinutes: number;
+      shortBreakMinutes: number;
+      lunchMinutes: number;
+      periodsPerDay: number;
+      workingDays: string;
+      timezone: string;
+    }>(
+      `SELECT COALESCE(timetable_start_time, '09:00') AS "startTime",
+              COALESCE(timetable_end_time, '16:00') AS "endTime",
+              COALESCE(timetable_period_minutes, 40) AS "periodMinutes",
+              COALESCE(timetable_short_break_minutes, 15) AS "shortBreakMinutes",
+              COALESCE(timetable_lunch_minutes, 40) AS "lunchMinutes",
+              COALESCE(timetable_periods_per_day, 9) AS "periodsPerDay",
+              COALESCE(timetable_working_days, '1,2,3,4,5') AS "workingDays",
+              COALESCE(timetable_timezone, 'Asia/Kolkata') AS timezone
+       FROM settings WHERE institution_id=?`,
+      [institutionId],
+      db
+    );
+    if (!item) return defaultTimetableSettings;
+    return {
+      startTime: item.startTime || defaultTimetableSettings.startTime,
+      endTime: item.endTime || defaultTimetableSettings.endTime,
+      periodMinutes: Number(item.periodMinutes) || defaultTimetableSettings.periodMinutes,
+      shortBreakMinutes: Number(item.shortBreakMinutes) || defaultTimetableSettings.shortBreakMinutes,
+      lunchMinutes: Number(item.lunchMinutes) || defaultTimetableSettings.lunchMinutes,
+      periodsPerDay: Number(item.periodsPerDay) || defaultTimetableSettings.periodsPerDay,
+      workingDays: String(item.workingDays || "1,2,3,4,5").split(",").map(Number),
+      timezone: item.timezone || defaultTimetableSettings.timezone,
+    };
+  } catch {
+    return defaultTimetableSettings;
+  }
 }
 
 export async function saveTimetableSettings(institutionId:string,userId:string,input:TimetableSettings){
   validateTimetableSettings(input);
   timetableSlots(input);
   const db=await ready();
+  await ensureTimetableSchema(db);
   await run('INSERT INTO settings(institution_id)VALUES(?) ON CONFLICT(institution_id) DO NOTHING',[institutionId],db);
   await run('UPDATE settings SET timetable_start_time=?,timetable_end_time=?,timetable_period_minutes=?,timetable_short_break_minutes=?,timetable_lunch_minutes=?,timetable_periods_per_day=?,timetable_working_days=?,timetable_timezone=?,updated_at=CURRENT_TIMESTAMP WHERE institution_id=?',[input.startTime,input.endTime,input.periodMinutes,input.shortBreakMinutes,input.lunchMinutes,input.periodsPerDay,[...input.workingDays].sort().join(","),input.timezone,institutionId],db);
   await audit(institutionId,userId,"Timetable Settings Updated","Settings",institutionId,{...input},db);
@@ -3715,14 +3811,30 @@ export async function saveTimetableSettings(institutionId:string,userId:string,i
 export type GeneratedTimetableEntry={weekday:number;startTime:string;endTime:string;subject:string;teacherId:string|null;teacherName:string};
 export async function timetableContext(institutionId:string,className:string,section:string,academicYear:string){
   const db=await ready();
+  await ensureTimetableSchema(db).catch(() => {});
   const target=await row<{id:string}>('SELECT id FROM classes WHERE institution_id=? AND name=? AND section=? AND academic_year=? AND status=?',[institutionId,className,section,academicYear,"Active"],db);
   if(!target)throw new Error("Choose an active class and section for this academic year.");
   const teachers=(await listTeachers(institutionId)).filter(item=>item.status==="Active"&&parseTeacherClasses(item.classes).includes(className)&&item.subject.trim());
-  const existing=await rows<{id:string;weekday:number;startTime:string;endTime:string;subject:string;teacherId:string|null;generated:boolean;className:string;section:string}>('SELECT id,weekday,start_time AS "startTime",end_time AS "endTime",subject,teacher_id AS "teacherId",generated,class_name AS "className",section FROM timetable_entries WHERE institution_id=? AND academic_year=? AND status<>\'Archived\'',[institutionId,academicYear],db);
+  let existing: any[] = [];
+  try {
+    existing = await rows<{id:string;weekday:number;startTime:string;endTime:string;subject:string;teacherId:string|null;generated:boolean;className:string;section:string}>(
+      'SELECT id,weekday,start_time AS "startTime",end_time AS "endTime",subject,teacher_id AS "teacherId",COALESCE(generated, FALSE) AS "generated",class_name AS "className",section FROM timetable_entries WHERE institution_id=? AND academic_year=? AND COALESCE(status, \'Published\')<>\'Archived\'',
+      [institutionId,academicYear],
+      db
+    );
+  } catch {
+    existing = await rows<{id:string;weekday:number;startTime:string;endTime:string;subject:string;teacherId:string|null;generated:boolean;className:string;section:string}>(
+      'SELECT id,weekday,start_time AS "startTime",end_time AS "endTime",subject,teacher_id AS "teacherId",FALSE AS "generated",class_name AS "className",section FROM timetable_entries WHERE institution_id=? AND academic_year=?',
+      [institutionId,academicYear],
+      db
+    ).catch(() => []);
+  }
   return {teachers,existing};
 }
 
 export async function previewWeeklyTimetable(institutionId:string,className:string,section:string,academicYear:string){
+  const db = await ready();
+  await ensureTimetableSchema(db).catch(() => {});
   const settings=await getTimetableSettings(institutionId),slots=timetableSlots(settings),{teachers,existing}=await timetableContext(institutionId,className,section,academicYear);
   const assignedSubjects=[...new Map(teachers.map(item=>[item.subject.trim().toLocaleLowerCase(),item.subject.trim()])).values()];
   if(!assignedSubjects.length)throw new Error("Assign at least one subject teacher to this class before generating a timetable.");
@@ -3749,7 +3861,9 @@ export async function previewWeeklyTimetable(institutionId:string,className:stri
 }
 
 export async function applyWeeklyTimetable(institutionId:string,userId:string,className:string,section:string,academicYear:string){
-  const preview=await previewWeeklyTimetable(institutionId,className,section,academicYear),db=await ready();
+  const db=await ready();
+  await ensureTimetableSchema(db);
+  const preview=await previewWeeklyTimetable(institutionId,className,section,academicYear);
   await db.begin(async tx=>{
     await run("UPDATE timetable_entries SET status='Draft' WHERE institution_id=? AND class_name=? AND section=? AND academic_year=? AND status<>'Archived'",[institutionId,className,section,academicYear],tx);
     await run("UPDATE timetable_entries SET status='Archived' WHERE institution_id=? AND class_name=? AND section=? AND academic_year=? AND generated=TRUE AND status<>'Archived'",[institutionId,className,section,academicYear],tx);
@@ -4141,9 +4255,25 @@ export async function staffAttendanceData(institutionId:string,date:string,month
 }
 
 export type TimetableEntryRecord={id:string;className:string;section:string;academicYear:string;weekday:number;startTime:string;endTime:string;subject:string;teacherId:string|null;teacherName:string;generated:boolean;status:"Draft"|"Published"|"Archived"};
-export async function listTimetableEntries(institutionId:string,className:string,section:string,academicYear:string){return rows<TimetableEntryRecord>('SELECT t.id,t.class_name AS "className",t.section,t.academic_year AS "academicYear",t.weekday,t.start_time AS "startTime",t.end_time AS "endTime",t.subject,t.teacher_id AS "teacherId",COALESCE(te.name,\'Unassigned\') AS "teacherName",t.generated,t.status FROM timetable_entries t LEFT JOIN teachers te ON te.id=t.teacher_id AND te.institution_id=t.institution_id WHERE t.institution_id=? AND t.class_name=? AND t.section=? AND t.academic_year=? AND t.status<>\'Archived\' ORDER BY t.weekday,t.start_time',[institutionId,className,section,academicYear],await ready())}
+export async function listTimetableEntries(institutionId:string,className:string,section:string,academicYear:string){
+  const db=await ready();
+  await ensureTimetableSchema(db).catch(() => {});
+  try {
+    return await rows<TimetableEntryRecord>(
+      'SELECT t.id,t.class_name AS "className",t.section,t.academic_year AS "academicYear",t.weekday,t.start_time AS "startTime",t.end_time AS "endTime",t.subject,t.teacher_id AS "teacherId",COALESCE(te.name,\'Unassigned\') AS "teacherName",COALESCE(t.generated, FALSE) AS "generated",COALESCE(t.status, \'Published\') AS "status" FROM timetable_entries t LEFT JOIN teachers te ON te.id=t.teacher_id AND te.institution_id=t.institution_id WHERE t.institution_id=? AND t.class_name=? AND t.section=? AND t.academic_year=? AND COALESCE(t.status, \'Published\')<>\'Archived\' ORDER BY t.weekday,t.start_time',
+      [institutionId,className,section,academicYear],
+      db
+    );
+  } catch {
+    return await rows<TimetableEntryRecord>(
+      'SELECT t.id,t.class_name AS "className",t.section,t.academic_year AS "academicYear",t.weekday,t.start_time AS "startTime",t.end_time AS "endTime",t.subject,t.teacher_id AS "teacherId",COALESCE(te.name,\'Unassigned\') AS "teacherName",FALSE AS "generated",\'Published\' AS "status" FROM timetable_entries t LEFT JOIN teachers te ON te.id=t.teacher_id AND te.institution_id=t.institution_id WHERE t.institution_id=? AND t.class_name=? AND t.section=? AND t.academic_year=? ORDER BY t.weekday,t.start_time',
+      [institutionId,className,section,academicYear],
+      db
+    ).catch(() => []);
+  }
+}
 export async function updateTimetableEntry(institutionId:string,userId:string,id:string,input:{className:string;section:string;academicYear:string;weekday:number;startTime:string;endTime:string;subject:string;teacherId?:string|null}){
- const db=await ready();if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(input.startTime)||!/^([01]\d|2[0-3]):[0-5]\d$/.test(input.endTime))throw new Error("Enter valid 24-hour start and end times.");timeMinutes(input.startTime);timeMinutes(input.endTime);if(timeMinutes(input.endTime)<=timeMinutes(input.startTime))throw new Error("End time must be after start time.");if(input.weekday<1||input.weekday>6)throw new Error("Choose Monday through Saturday.");
+ const db=await ready();await ensureTimetableSchema(db);if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(input.startTime)||!/^([01]\d|2[0-3]):[0-5]\d$/.test(input.endTime))throw new Error("Enter valid 24-hour start and end times.");timeMinutes(input.startTime);timeMinutes(input.endTime);if(timeMinutes(input.endTime)<=timeMinutes(input.startTime))throw new Error("End time must be after start time.");if(input.weekday<1||input.weekday>6)throw new Error("Choose Monday through Saturday.");
  const target=await row<{count:number}>("SELECT COUNT(*)::int count FROM institution_classes c JOIN institution_sections s ON s.class_id=c.id WHERE c.institution_id=? AND c.name=? AND c.status='Active' AND s.name=? AND s.status='Active'",[institutionId,input.className,input.section],db);if(!target.count)throw new Error("Choose a configured class and section.");
  if(input.teacherId&&!await row<{id:string}>("SELECT id FROM teachers WHERE id=? AND institution_id=? AND status='Active'",[input.teacherId,institutionId],db))throw new Error("Choose an active teacher from this school.");
  const conflict=await row<{id:string}>("SELECT id FROM timetable_entries WHERE institution_id=? AND academic_year=? AND weekday=? AND status<>'Archived' AND id<>? AND ((class_name=? AND section=?) OR (? IS NOT NULL AND teacher_id=?)) AND start_time<? AND end_time>? LIMIT 1",[institutionId,input.academicYear,input.weekday,id,input.className,input.section,input.teacherId||null,input.teacherId||null,input.endTime,input.startTime],db);if(conflict)throw new Error("This period conflicts with another class or teacher entry.");
@@ -4151,15 +4281,15 @@ export async function updateTimetableEntry(institutionId:string,userId:string,id
  await db.begin(async tx=>{await run("UPDATE timetable_entries SET status='Draft' WHERE institution_id=? AND class_name=? AND section=? AND academic_year=? AND status<>'Archived'",[institutionId,current.className,current.section,current.academicYear],tx);await run("UPDATE timetable_entries SET status='Draft' WHERE institution_id=? AND class_name=? AND section=? AND academic_year=? AND status<>'Archived'",[institutionId,input.className,input.section,input.academicYear],tx);const changed=await run("UPDATE timetable_entries SET class_name=?,section=?,academic_year=?,weekday=?,start_time=?,end_time=?,subject=?,teacher_id=?,generated=FALSE,status='Draft' WHERE id=? AND institution_id=?",[input.className,input.section,input.academicYear,input.weekday,input.startTime,input.endTime,input.subject,input.teacherId||null,id,institutionId],tx);if(!changed)throw new Error("Timetable entry not found.");await audit(institutionId,userId,"Timetable Entry Updated","Timetable",id,input,tx)});return listTimetableEntries(institutionId,input.className,input.section,input.academicYear);
 }
 export async function createTimetableEntry(institutionId:string,userId:string,input:{className:string;section:string;academicYear:string;weekday:number;startTime:string;endTime:string;subject:string;teacherId?:string|null}){
- const db=await ready();if(!/^([01]\\d|2[0-3]):[0-5]\\d$/.test(input.startTime)||!/^([01]\\d|2[0-3]):[0-5]\\d$/.test(input.endTime))throw new Error("Enter valid 24-hour start and end times.");timeMinutes(input.startTime);timeMinutes(input.endTime);if(timeMinutes(input.endTime)<=timeMinutes(input.startTime))throw new Error("End time must be after start time.");if(input.weekday<1||input.weekday>6)throw new Error("Choose Monday through Saturday.");
+ const db=await ready();await ensureTimetableSchema(db);if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(input.startTime)||!/^([01]\d|2[0-3]):[0-5]\d$/.test(input.endTime))throw new Error("Enter valid 24-hour start and end times.");timeMinutes(input.startTime);timeMinutes(input.endTime);if(timeMinutes(input.endTime)<=timeMinutes(input.startTime))throw new Error("End time must be after start time.");if(input.weekday<1||input.weekday>6)throw new Error("Choose Monday through Saturday.");
  const target=await row<{count:number}>("SELECT COUNT(*)::int count FROM institution_classes c JOIN institution_sections s ON s.class_id=c.id WHERE c.institution_id=? AND c.name=? AND c.status='Active' AND s.name=? AND s.status='Active'",[institutionId,input.className,input.section],db);if(!target.count)throw new Error("Choose a configured class and section.");
  if(input.teacherId&&!await row<{id:string}>("SELECT id FROM teachers WHERE id=? AND institution_id=? AND status='Active'",[input.teacherId,institutionId],db))throw new Error("Choose an active teacher from this school.");
  const conflict=await row<{id:string}>("SELECT id FROM timetable_entries WHERE institution_id=? AND academic_year=? AND weekday=? AND status<>'Archived' AND ((class_name=? AND section=?) OR (? IS NOT NULL AND teacher_id=?)) AND start_time<? AND end_time>? LIMIT 1",[institutionId,input.academicYear,input.weekday,input.className,input.section,input.teacherId||null,input.teacherId||null,input.endTime,input.startTime],db);if(conflict)throw new Error("This period conflicts with another class or teacher entry.");
  const id=randomUUID();await db.begin(async tx=>{await run("UPDATE timetable_entries SET status='Draft' WHERE institution_id=? AND class_name=? AND section=? AND academic_year=? AND status<>'Archived'",[institutionId,input.className,input.section,input.academicYear],tx);await run("INSERT INTO timetable_entries(id,institution_id,class_name,section,academic_year,weekday,start_time,end_time,subject,teacher_id,generated,status) VALUES(?,?,?,?,?,?,?,?,?,?,FALSE,'Draft')",[id,institutionId,input.className,input.section,input.academicYear,input.weekday,input.startTime,input.endTime,input.subject,input.teacherId||null],tx);await audit(institutionId,userId,"Timetable Entry Added","Timetable",id,input,tx)});return listTimetableEntries(institutionId,input.className,input.section,input.academicYear);
 }
-export async function deleteTimetableEntry(institutionId:string,userId:string,id:string){const db=await ready(),item=await row<{className:string;section:string;academicYear:string}>("SELECT class_name AS \"className\",section,academic_year AS \"academicYear\" FROM timetable_entries WHERE id=? AND institution_id=? AND status<>'Archived'",[id,institutionId],db);if(!item)throw new Error("Timetable entry not found.");await db.begin(async tx=>{await run("UPDATE timetable_entries SET status='Draft' WHERE institution_id=? AND class_name=? AND section=? AND academic_year=? AND status<>'Archived'",[institutionId,item.className,item.section,item.academicYear],tx);await run("UPDATE timetable_entries SET status='Archived' WHERE id=? AND institution_id=?",[id,institutionId],tx);await audit(institutionId,userId,"Timetable Entry Archived","Timetable",id,item,tx)});return true}
+export async function deleteTimetableEntry(institutionId:string,userId:string,id:string){const db=await ready();await ensureTimetableSchema(db);const item=await row<{className:string;section:string;academicYear:string}>("SELECT class_name AS \"className\",section,academic_year AS \"academicYear\" FROM timetable_entries WHERE id=? AND institution_id=? AND status<>'Archived'",[id,institutionId],db);if(!item)throw new Error("Timetable entry not found.");await db.begin(async tx=>{await run("UPDATE timetable_entries SET status='Draft' WHERE institution_id=? AND class_name=? AND section=? AND academic_year=? AND status<>'Archived'",[institutionId,item.className,item.section,item.academicYear],tx);await run("UPDATE timetable_entries SET status='Archived' WHERE id=? AND institution_id=?",[id,institutionId],tx);await audit(institutionId,userId,"Timetable Entry Archived","Timetable",id,item,tx)});return true}
 export async function publishTimetable(institutionId:string,userId:string,className:string,section:string,academicYear:string){
- const db=await ready(),entries=await rows<{id:string;weekday:number;startTime:string;endTime:string;teacherId:string|null}>("SELECT id,weekday,start_time AS \"startTime\",end_time AS \"endTime\",teacher_id AS \"teacherId\" FROM timetable_entries WHERE institution_id=? AND class_name=? AND section=? AND academic_year=? AND status<>'Archived'",[institutionId,className,section,academicYear],db);
+ const db=await ready();await ensureTimetableSchema(db);const entries=await rows<{id:string;weekday:number;startTime:string;endTime:string;teacherId:string|null}>("SELECT id,weekday,start_time AS \"startTime\",end_time AS \"endTime\",teacher_id AS \"teacherId\" FROM timetable_entries WHERE institution_id=? AND class_name=? AND section=? AND academic_year=? AND status<>'Archived'",[institutionId,className,section,academicYear],db);
  if(!entries.length)throw new Error("Add at least one period before publishing the timetable.");
  for(const item of entries){if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(item.startTime)||!/^([01]\d|2[0-3]):[0-5]\d$/.test(item.endTime)||timeMinutes(item.endTime)<=timeMinutes(item.startTime))throw new Error("Every timetable period must have valid start and end times.")}
  const all=await rows<{id:string;className:string;section:string;weekday:number;startTime:string;endTime:string;teacherId:string|null}>("SELECT id,class_name AS \"className\",section,weekday,start_time AS \"startTime\",end_time AS \"endTime\",teacher_id AS \"teacherId\" FROM timetable_entries WHERE institution_id=? AND academic_year=? AND status<>'Archived'",[institutionId,academicYear],db),mins=(time:string)=>timeMinutes(time);
@@ -4185,6 +4315,7 @@ export type SaveClassTimetableInput = {
 
 export async function saveClassTimetable(institutionId: string, userId: string, input: SaveClassTimetableInput) {
   const db = await ready();
+  await ensureTimetableSchema(db);
   const { className, section, academicYear, entries } = input;
   const target = await row<{ count: number }>(
     "SELECT COUNT(*)::int count FROM institution_classes c JOIN institution_sections s ON s.class_id=c.id WHERE c.institution_id=? AND c.name=? AND c.status='Active' AND s.name=? AND s.status='Active'",
@@ -5003,23 +5134,44 @@ export async function parentChildHomework(institutionId: string, className: stri
 
 export async function parentChildTimetable(institutionId: string, className: string, section: string, academicYear: string) {
   const db = await ready();
-  return await rows<{
-    id: string;
-    subject: string;
-    teacherName: string;
-    weekday: number;
-    startTime: string;
-    endTime: string;
-  }>(
-    `SELECT t.id, t.subject, COALESCE(tc.name, '') AS "teacherName",
-            t.weekday, t.start_time AS "startTime", t.end_time AS "endTime"
-     FROM timetable_entries t
-     LEFT JOIN teachers tc ON tc.id = t.teacher_id AND tc.institution_id = t.institution_id
-     WHERE t.institution_id = ? AND t.class_name = ? AND (t.section = ? OR t.section = '') AND t.academic_year = ? AND t.status='Published'
-     ORDER BY t.weekday ASC, t.start_time ASC`,
-    [institutionId, className, section, academicYear],
-    db
-  );
+  await ensureTimetableSchema(db).catch(() => {});
+  try {
+    return await rows<{
+      id: string;
+      subject: string;
+      teacherName: string;
+      weekday: number;
+      startTime: string;
+      endTime: string;
+    }>(
+      `SELECT t.id, t.subject, COALESCE(tc.name, '') AS "teacherName",
+              t.weekday, t.start_time AS "startTime", t.end_time AS "endTime"
+       FROM timetable_entries t
+       LEFT JOIN teachers tc ON tc.id = t.teacher_id AND tc.institution_id = t.institution_id
+       WHERE t.institution_id = ? AND t.class_name = ? AND (t.section = ? OR t.section = '') AND t.academic_year = ? AND COALESCE(t.status, 'Published')='Published'
+       ORDER BY t.weekday ASC, t.start_time ASC`,
+      [institutionId, className, section, academicYear],
+      db
+    );
+  } catch {
+    return await rows<{
+      id: string;
+      subject: string;
+      teacherName: string;
+      weekday: number;
+      startTime: string;
+      endTime: string;
+    }>(
+      `SELECT t.id, t.subject, COALESCE(tc.name, '') AS "teacherName",
+              t.weekday, t.start_time AS "startTime", t.end_time AS "endTime"
+       FROM timetable_entries t
+       LEFT JOIN teachers tc ON tc.id = t.teacher_id AND tc.institution_id = t.institution_id
+       WHERE t.institution_id = ? AND t.class_name = ? AND (t.section = ? OR t.section = '') AND t.academic_year = ?
+       ORDER BY t.weekday ASC, t.start_time ASC`,
+      [institutionId, className, section, academicYear],
+      db
+    ).catch(() => []);
+  }
 }
 
 export async function parentChildOverview(institutionId: string, parentUserId: string, studentId: string) {
