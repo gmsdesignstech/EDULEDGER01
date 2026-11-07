@@ -6,6 +6,7 @@ export function roleHome(role: string) {
   if (role === "SUPER_ADMIN") return "/admin";
   if (role === "TEACHER") return "/teacher";
   if (role === "PARENT") return "/parent";
+  if (role === "STUDENT") return "/student";
   return "/dashboard";
 }
 
@@ -65,6 +66,19 @@ export function safeParentRedirect(value: string | null | undefined, fallback = 
   }
 }
 
+export function safeStudentRedirect(value: string | null | undefined, fallback = "/student") {
+  if (!value || !value.startsWith("/") || value.startsWith("//") || value.includes("\\")) return fallback;
+  try {
+    const url = new URL(value, "https://eduledger.invalid");
+    if (url.origin !== "https://eduledger.invalid") return fallback;
+    return url.pathname === "/student" || url.pathname.startsWith("/student/")
+      ? `${url.pathname}${url.search}${url.hash}`
+      : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 export function schoolAccountDestination(input: {
   role: string;
   subscriptionStatus?: string;
@@ -78,6 +92,9 @@ export function schoolAccountDestination(input: {
   }
   if (input.role === "PARENT") {
     return safeParentRedirect(input.requested);
+  }
+  if (input.role === "STUDENT") {
+    return safeStudentRedirect(input.requested);
   }
   if (home !== "/dashboard" || input.role !== "SCHOOL_ADMIN") return home;
   if (["ACTIVE", "EXPIRING_SOON"].includes(input.subscriptionStatus ?? ""))

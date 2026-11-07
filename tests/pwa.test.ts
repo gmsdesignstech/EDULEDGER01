@@ -4,6 +4,7 @@ import path from "node:path";
 import manifest from "../src/app/manifest";
 import { GET as teacherManifestHandler } from "../src/app/manifest-teacher.webmanifest/route";
 import { GET as parentManifestHandler } from "../src/app/manifest-parent.webmanifest/route";
+import { GET as studentManifestHandler } from "../src/app/manifest-student.webmanifest/route";
 import { parentNoStore } from "../src/lib/parent-auth";
 import { teacherNoStore } from "../src/lib/teacher-auth";
 
@@ -11,7 +12,7 @@ describe("EduLedger Progressive Web App (PWA) Engine", () => {
   describe("Web App Manifests", () => {
     it("provides a valid root manifest with standalone display, shortcuts and all required icons", () => {
       const data = manifest();
-      expect(data.name).toBe("EduLedger - School & Parent Portal");
+      expect(data.name).toBe("EduLedger");
       expect(data.short_name).toBe("EduLedger");
       expect(data.display).toBe("standalone");
       expect(data.start_url).toBe("/");
@@ -57,6 +58,18 @@ describe("EduLedger Progressive Web App (PWA) Engine", () => {
       expect(data.display).toBe("standalone");
       expect(data.shortcuts.length).toBeGreaterThanOrEqual(4);
     });
+
+    it("serves a standalone Student Portal manifest scoped to student routes", async () => {
+      const res = await studentManifestHandler();
+      expect(res.status).toBe(200);
+      expect(res.headers.get("Content-Type")).toContain("application/manifest+json");
+      const data = await res.json();
+      expect(data.name).toBe("EduLedger - Student Portal");
+      expect(data.start_url).toBe("/student");
+      expect(data.scope).toBe("/student");
+      expect(data.display).toBe("standalone");
+      expect(data.icons).toHaveLength(4);
+    });
   });
 
   describe("Service Worker & Security Policies", () => {
@@ -75,6 +88,7 @@ describe("EduLedger Progressive Web App (PWA) Engine", () => {
       expect(swContent).toContain('"/api/"');
       expect(swContent).toContain('"/parent"');
       expect(swContent).toContain('"/teacher"');
+      expect(swContent).toContain('"/student"');
       expect(swContent).toContain('"/dashboard"');
       expect(swContent).toContain('"/students"');
       expect(swContent).toContain('"/fees"');
@@ -83,6 +97,9 @@ describe("EduLedger Progressive Web App (PWA) Engine", () => {
 
       // Verify cache invalidation
       expect(swContent).toContain("self.skipWaiting()");
+      expect(swContent).toContain('event.data?.type === "SKIP_WAITING"');
+      expect(swContent).toContain('name.startsWith("eduledger-pwa-")');
+      expect(swContent).not.toContain(".then(() => self.skipWaiting())");
       expect(swContent).toContain("self.clients.claim()");
       expect(swContent).toContain("caches.delete(name)");
     });
@@ -99,7 +116,8 @@ describe("EduLedger Progressive Web App (PWA) Engine", () => {
       expect(fs.existsSync(offlineHtmlPath)).toBe(true);
       const content = fs.readFileSync(offlineHtmlPath, "utf-8");
       expect(content).toContain("You're Offline");
-      expect(content).toContain("Privacy Protection");
+      expect(content).toContain("Offline limits:");
+      expect(content).toContain("Unsaved changes are not queued or submitted later.");
     });
 
     it("strictly enforces private no-cache, no-store headers on teacher and parent APIs", () => {
