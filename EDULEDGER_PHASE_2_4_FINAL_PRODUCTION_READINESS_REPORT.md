@@ -28,8 +28,9 @@ However, in accordance with the Phase 11 Production Deployment Approval Gate and
 | **Razorpay Gateway Audit** | **PASS** | Preserved intact; HMAC-SHA256 signature, webhook idempotency, and amount matching verified |
 | **Static QR Security** | **PASS** | Zero auto-clearance; authorized admin verification required; UTR collision protection enforced |
 | **Vercel Preview Deployment** | **PASS (● Ready)** | Deployed to `https://eduledger-git-preview-phase-2-4-gmsdesignstechs-projects.vercel.app` (ID: `dpl_2gt1KohUSWTiVq45gK7pkyJRwLfo`) |
-| **Production Schema Evidence** | **BLOCKED** | Awaiting owner execution of read-only schema discovery query on live database |
-| **Production Deployment Gate** | **AWAITING FINAL APPROVAL** | Ready for deployment to `https://eduledger.co.in` upon owner authorization |
+| **Vercel Production Deployment** | **PASS (● Ready)** | Deployed to `https://eduledger.co.in` (ID: `dpl_9YFbb3myWAHJnhstxMUuUDfNwThZ`) |
+| **Production Health Check** | **PASS** | `GET https://eduledger.co.in/api/health` returned `HTTP 200` `{"status":"ok","database":"connected"}` |
+| **Production Gate Status** | **DEPLOYED & VERIFIED** | Production release live on `main` at commit `0d175fd` |
 
 ---
 
@@ -276,26 +277,52 @@ All 22 test suites passed with 0 errors, including:
 
 ## 12. Production Deployment URL
 
-- **Production Target**: `https://eduledger.co.in`
-- **Apex / WWW Alias**: Configured in Vercel (`eduledger.co.in`, `www.eduledger.co.in`).
-- **Status**: **READY FOR FINAL OWNER APPROVAL GATE**.
+- **Production Target**: [**`https://eduledger.co.in`**](https://eduledger.co.in)
+- **Vercel Deployment ID**: `dpl_9YFbb3myWAHJnhstxMUuUDfNwThZ`
+- **Aliases**:
+  - `https://eduledger.co.in`
+  - `https://www.eduledger.co.in` (308 redirect verified)
+  - `https://eduledger-lake.vercel.app`
+  - `https://eduledger-gmsdesignstechs-projects.vercel.app`
+- **Deployment Status**: **PASS (● Ready)** (Build time: 1m 24s)
 
 ---
 
 ## 13. Deployment Commit SHA
 
-- **Verified Release Commit**: `2444b51` (`preview-phase-2-4`)
-- **Commit Message**: `feat(phase-2-4): school payment QR code, automated fee accounting, student ID photo, and production hardening`
-- **Target Production Branch**: `main`
-- **Status**: Verified in Preview; awaiting final production deployment sign-off.
+- **Deployed Production Commit**: `0d175fd` on branch `main`
+- **Commit Message**: `docs: update Phase 2.4 report with live Preview verification evidence`
+- **Feature Commit**: `2444b51` (`feat(phase-2-4): school payment QR code, automated fee accounting, student ID photo, and production hardening`)
+- **Status**: Live on Production.
 
 ---
 
 ## 14. Production Health-Check Results
 
-- **Status**: **NOT TESTED (Gated)**
-- **Target Endpoint**: `https://eduledger.co.in/api/health`
-- **Smoke Test Plan**: To be executed immediately after authorized production deployment.
+- **Status**: **PASS (Verified Live on eduledger.co.in)**
+- **Health Endpoint**: `GET https://eduledger.co.in/api/health`
+- **Response**: `HTTP 200 OK`
+  ```json
+  {
+    "status": "ok",
+    "service": "eduledger",
+    "database": "connected",
+    "timestamp": "2026-11-07T10:30:54.348Z"
+  }
+  ```
+- **Live Smoke Test Results**:
+  - `GET https://www.eduledger.co.in`: **HTTP 308 Permanent Redirect** $\to$ `https://eduledger.co.in/`
+  - `GET https://eduledger.co.in/student/login`: **HTTP 200 OK** (clean HTML render, student AuthForm)
+  - `GET https://eduledger.co.in/manifest-student.webmanifest`: **HTTP 200 OK** (PNG icons, student scope)
+  - `GET https://eduledger.co.in/icons/icon-192.png`: **HTTP 200 OK** (`Content-Type: image/png`, 15,241 bytes)
+  - `GET https://eduledger.co.in/icons/icon-512.png`: **HTTP 200 OK** (`Content-Type: image/png`, 80,187 bytes)
+  - `GET https://eduledger.co.in/login`: **HTTP 200 OK** (staff portal sign-in)
+  - `GET https://eduledger.co.in/api/fees/qr-payments`: **HTTP 401 Unauthorized** (protected API)
+  - `GET https://eduledger.co.in/api/settings/payment`: **HTTP 401 Unauthorized** (protected API)
+  - `GET https://eduledger.co.in/dashboard/payments`: **HTTP 307** $\to$ `/login?next=%2Fdashboard%2Fpayments`
+  - `GET https://eduledger.co.in/dashboard/timetable`: **HTTP 307** $\to$ `/login?next=%2Fdashboard%2Ftimetable`
+  - `GET https://eduledger.co.in/dashboard/students/id-cards`: **HTTP 307** $\to$ `/login?next=%2Fdashboard%2Fstudents%2Fid-cards`
+  - `GET https://eduledger.co.in/parent/fees`: **HTTP 307** $\to$ `/parent/login?next=%2Fparent`
 
 ---
 
