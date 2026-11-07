@@ -6,7 +6,7 @@ import { Eye, EyeOff, Loader2, ShieldCheck } from "lucide-react";
 import { Logo } from "./logo";
 import { annualCheckoutHref, schoolAccountDestination, whatsappAddonCheckoutHref } from "@/lib/auth-redirect";
 import { parseApiResponse } from "@/lib/api-response";
-export function AuthForm({ mode, initialStudentCount = 1, afterSubscriptionHref, afterLoginHref, audience = "school" }: { mode: "login" | "register"; initialStudentCount?: number; afterSubscriptionHref?: string; afterLoginHref?: string; audience?: "school"|"teacher"|"parent" }) {
+export function AuthForm({ mode, initialStudentCount = 1, afterSubscriptionHref, afterLoginHref, audience = "school" }: { mode: "login" | "register"; initialStudentCount?: number; afterSubscriptionHref?: string; afterLoginHref?: string; audience?: "school"|"teacher"|"parent"|"student" }) {
   const router = useRouter();
   const [show, setShow] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -117,6 +117,8 @@ export function AuthForm({ mode, initialStudentCount = 1, afterSubscriptionHref,
                 ? "Teacher Portal Sign In"
                 : audience === "parent"
                   ? "Parent Portal Sign In"
+                  : audience === "student"
+                    ? "Student Portal Sign In"
                   : "School Administrator Sign In"
               : "Create your workspace"}
           </h1>
@@ -125,7 +127,9 @@ export function AuthForm({ mode, initialStudentCount = 1, afterSubscriptionHref,
               ? audience === "teacher"
                 ? "Use the teacher account provided by your school."
                 : audience === "parent"
-                  ? "Enter your credentials to access your child's records, fees, and updates."
+                  ? "Enter your registered mobile number or email. Parent numbers come from the school's existing student profiles."
+                  : audience === "student"
+                    ? "Use the student credentials activated by your school."
                   : "Enter the registered credentials for your school workspace."
               : "Your school workspace will be ready in moments."}
           </p>
@@ -165,10 +169,10 @@ export function AuthForm({ mode, initialStudentCount = 1, afterSubscriptionHref,
             )}
             <Field
               name="email"
-              label="Email address"
-              placeholder="admin@school.edu"
-              type="email"
-              autoComplete="email"
+              label={audience === "parent" ? "Registered Mobile Number or Email" : "Email address"}
+              placeholder={audience === "parent" ? "e.g. 9876543210 or parent@school.edu" : "admin@school.edu"}
+              type={audience === "parent" ? "text" : "email"}
+              autoComplete={audience === "parent" ? "username" : "email"}
             />
             <label className="block text-sm font-bold text-slate-100">
               Password
@@ -271,7 +275,7 @@ export function AuthForm({ mode, initialStudentCount = 1, afterSubscriptionHref,
                 Activate Account
               </Link>
             </p>
-          ) : audience !== "teacher" ? (
+          ) : audience !== "teacher" && audience !== "student" ? (
             <p className="mt-7 text-center text-sm text-slate-400">
               {mode === "login"
                 ? "New to EduLedger? "
