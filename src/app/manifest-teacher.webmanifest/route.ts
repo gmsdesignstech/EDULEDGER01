@@ -11,7 +11,7 @@ export async function GET() {
     display: "standalone",
     background_color: "#0b1226",
     theme_color: "#2563eb",
-    orientation: "portrait-primary",
+    orientation: "any",
     scope: "/teacher",
     icons: [
       {

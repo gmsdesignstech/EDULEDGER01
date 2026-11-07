@@ -31,19 +31,13 @@ export function serverErrorCategory(error: unknown): ServerErrorCategory {
   if (isUniqueConstraintError(error)) return "database_constraint";
   if (/No PostgreSQL connection URL|DATABASE_URL must be/i.test(message))
     return "database_configuration";
-  if (/no such (?:table|column)|has no column named/i.test(message))
-    return "database_schema";
   return "unknown";
 }
 
 export function isUniqueConstraintError(error: unknown, constraint?: string) {
   const databaseError = error as DatabaseError;
   const isUnique =
-    databaseError?.code === "23505" ||
-    databaseError?.code === "SQLITE_CONSTRAINT_UNIQUE" ||
-    databaseError?.code === "SQLITE_CONSTRAINT_PRIMARYKEY" ||
-    (databaseError?.code === "ERR_SQLITE_ERROR" &&
-      databaseError.message.startsWith("UNIQUE constraint failed:"));
+    databaseError?.code === "23505";
 
   if (!isUnique || !constraint) return isUnique;
   return [databaseError.constraint_name, databaseError.constraint].some((value) =>

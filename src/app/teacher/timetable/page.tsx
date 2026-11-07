@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiJson } from "@/lib/api-response";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
@@ -45,10 +46,10 @@ export default function TeacherTimetablePage() {
     fetch("/api/teacher/timetable")
       .then(async (res) => {
         if (!res.ok) {
-          const err = await res.json().catch(() => null);
+          const err = await readApiJson(res).catch(() => null);
           throw new Error(err?.error || "Could not load timetable");
         }
-        return res.json();
+        return readApiJson(res);
       })
       .then((data) => {
         setEntries(data.timetable || []);

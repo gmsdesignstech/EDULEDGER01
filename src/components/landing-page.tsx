@@ -1,6 +1,7 @@
 "use client";
 import { PublicFooter } from "@/components/public-chrome";
 import { WhatsAppLandingSection } from "@/components/whatsapp-landing-section";
+import { AppDownloadSection } from "@/components/app-download-section";
 import Link from "next/link";
 import { motion, useReducedMotion } from "framer-motion";
 import {
@@ -76,6 +77,7 @@ export function LandingPage() {
       <Everything />
       <Features />
       <WhatsAppLandingSection />
+      <AppDownloadSection />
       <Benefits />
       <DashboardShowcase />
       <FinalCTA />

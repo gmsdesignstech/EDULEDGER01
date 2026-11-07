@@ -15,7 +15,29 @@ export function PwaInstallPrompt() {
   const [isStandalone, setIsStandalone] = useState(false);
   const [isIos, setIsIos] = useState(false);
   const [dismissed, setDismissed] = useState(false);
+  const [dismissalChecked, setDismissalChecked] = useState(false);
   const [showIosGuide, setShowIosGuide] = useState(false);
+  const [installError, setInstallError] = useState("");
+  const appContext = pathname.startsWith("/teacher")
+    ? "teacher"
+    : pathname.startsWith("/parent")
+      ? "parent"
+      : pathname.startsWith("/student")
+        ? "student"
+        : "main";
+  const dismissalKey = `eduledger_pwa_dismissed_${appContext}`;
+
+  useEffect(() => {
+    try {
+      const dismissedUntil = Number(localStorage.getItem(dismissalKey) || 0);
+      setDismissed(dismissedUntil > Date.now());
+      if (dismissedUntil <= Date.now()) localStorage.removeItem(dismissalKey);
+    } catch {
+      setDismissed(false);
+    } finally {
+      setDismissalChecked(true);
+    }
+  }, [dismissalKey]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -28,14 +50,10 @@ export function PwaInstallPrompt() {
 
     // Detect iOS
     const ua = window.navigator.userAgent.toLowerCase();
-    const isIosDevice = /iphone|ipad|ipod/.test(ua);
+    const isIosDevice =
+      /iphone|ipad|ipod/.test(ua) ||
+      (window.navigator.platform === "MacIntel" && window.navigator.maxTouchPoints > 1);
     setIsIos(isIosDevice);
-
-    // Check session dismissal
-    const wasDismissed = sessionStorage.getItem("eduledger_pwa_dismissed") === "true";
-    if (wasDismissed) {
-      setDismissed(true);
-    }
 
     // Capture Android/Chromium install prompt
     const handleBeforeInstall = (e: Event) => {
@@ -46,22 +64,29 @@ export function PwaInstallPrompt() {
     window.addEventListener("beforeinstallprompt", handleBeforeInstall);
 
     // Listen for successful install
-    window.addEventListener("appinstalled", () => {
+    const handleInstalled = () => {
       setDeferredPrompt(null);
       setIsStandalone(true);
-    });
+    };
+    window.addEventListener("appinstalled", handleInstalled);
 
     return () => {
       window.removeEventListener("beforeinstallprompt", handleBeforeInstall);
+      window.removeEventListener("appinstalled", handleInstalled);
     };
   }, []);
 
   const handleInstallClick = async () => {
     if (deferredPrompt) {
-      await deferredPrompt.prompt();
-      const choice = await deferredPrompt.userChoice;
-      if (choice.outcome === "accepted") {
+      setInstallError("");
+      try {
+        const prompt = deferredPrompt;
         setDeferredPrompt(null);
+        await prompt.prompt();
+        const choice = await prompt.userChoice;
+        if (choice.outcome === "accepted") setIsStandalone(true);
+      } catch {
+        setInstallError("Installation could not start. Use your browser menu to install EduLedger.");
       }
     } else if (isIos) {
       setShowIosGuide(true);
@@ -70,11 +95,15 @@ export function PwaInstallPrompt() {
 
   const handleDismiss = () => {
     setDismissed(true);
-    sessionStorage.setItem("eduledger_pwa_dismissed", "true");
+    try {
+      localStorage.setItem(dismissalKey, String(Date.now() + 30 * 24 * 60 * 60 * 1000));
+    } catch {
+      // The install prompt remains dismissible for this page session.
+    }
   };
 
   // Do not show if already installed in standalone mode, or dismissed, or no trigger available
-  if (isStandalone || dismissed || (!deferredPrompt && !isIos)) {
+  if (!dismissalChecked || isStandalone || dismissed || (!deferredPrompt && !isIos)) {
     return null;
   }
 
@@ -115,6 +144,8 @@ export function PwaInstallPrompt() {
           <p className="mt-1 text-[11px] leading-relaxed text-slate-600 dark:text-slate-400">
             {portalSubtitle}
           </p>
+
+          {installError && <p role="alert" className="mt-2 text-xs text-red-700 dark:text-red-300">{installError}</p>}
 
           {showIosGuide && (
             <div className="mt-2.5 rounded-xl border border-blue-200 bg-blue-50/80 p-2.5 text-[11px] leading-relaxed text-blue-900 dark:border-blue-800/50 dark:bg-blue-950/40 dark:text-blue-200">

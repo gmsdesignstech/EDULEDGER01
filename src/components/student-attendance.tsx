@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiJson } from "@/lib/api-response";
 import { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
@@ -221,7 +222,7 @@ export function StudentAttendance() {
     if (activeTab !== "monthly" || !className || !section || !year) return;
     setMonthlyLoading(true);
     fetch(`/api/attendance?view=monthly&academicYear=${encodeURIComponent(year)}&className=${encodeURIComponent(className)}&section=${encodeURIComponent(section)}&yearMonth=${encodeURIComponent(monthlyYearMonth)}`)
-      .then((r) => r.json())
+      .then((r) => readApiJson(r))
       .then((res) => {
         if (res.monthly) setMonthlyData(res.monthly);
       })
@@ -236,7 +237,7 @@ export function StudentAttendance() {
     const from = `${date.slice(0, 7)}-01`;
     const to = date;
     fetch(`/api/attendance?view=analytics&academicYear=${encodeURIComponent(year)}&className=${encodeURIComponent(className)}&section=${encodeURIComponent(section)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`)
-      .then((r) => r.json())
+      .then((r) => readApiJson(r))
       .then((res) => {
         if (res.analytics) setAnalyticsData(res.analytics);
       })
@@ -249,7 +250,7 @@ export function StudentAttendance() {
     if (activeTab !== "audit" || !year) return;
     setAuditLoading(true);
     fetch(`/api/attendance?view=audit&academicYear=${encodeURIComponent(year)}&className=${encodeURIComponent(className)}&section=${encodeURIComponent(section)}&date=${encodeURIComponent(date)}`)
-      .then((r) => r.json())
+      .then((r) => readApiJson(r))
       .then((res) => {
         if (res.history) setAuditList(res.history);
       })
@@ -262,7 +263,7 @@ export function StudentAttendance() {
     if (!year) return;
     setHolidaysLoading(true);
     fetch(`/api/attendance?view=holidays&academicYear=${encodeURIComponent(year)}`)
-      .then((r) => r.json())
+      .then((r) => readApiJson(r))
       .then((res) => {
         if (res.holidays) setHolidaysList(res.holidays);
       })
@@ -322,7 +323,7 @@ export function StudentAttendance() {
         }),
       });
 
-      const body = await response.json();
+      const body = await readApiJson(response);
       if (!response.ok) throw new Error(body.error || "Unable to save attendance.");
 
       setNotice(
@@ -354,7 +355,7 @@ export function StudentAttendance() {
           holiday: { ...newHoliday, academicYear: year },
         }),
       });
-      const body = await res.json();
+      const body = await readApiJson(res);
       if (!res.ok) throw new Error(body.error || "Failed to add holiday.");
       setNotice(`Holiday "${newHoliday.name}" recorded.`);
       setNewHoliday({ date: localDate(), name: "", type: "School Holiday", description: "" });

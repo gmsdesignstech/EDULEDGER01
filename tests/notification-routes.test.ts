@@ -86,6 +86,16 @@ describe("Notification Engine API Routes", () => {
   });
 
   describe("POST /api/notifications/ack", () => {
+    it("requires an authenticated session", async () => {
+      testContext.user = null;
+      const req = new Request("http://localhost/api/notifications/ack", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deliveryId: "delivery-id" }),
+      });
+      expect((await ackHandler(req)).status).toBe(401);
+    });
+
     it("returns 400 for invalid deliveryId payload", async () => {
       const req = new Request("http://localhost/api/notifications/ack", {
         method: "POST",
@@ -104,6 +114,28 @@ describe("Notification Engine API Routes", () => {
       });
       const res = await ackHandler(req);
       expect(res.status).toBe(404);
+    });
+
+    it("does not acknowledge another user's delivery", async () => {
+      const deliveryId = await recordNotificationDelivery({
+        institutionId: realAdmin.institutionId,
+        userId: realAdmin.id,
+        channel: "FCM",
+        status: "SENT",
+      });
+      const other = await createAccount({
+        name: "Other School Admin",
+        email: `other-${Date.now()}@school.test`,
+        institution: `Other School ${Date.now()}`,
+        passwordHash: await hash("password123", 4),
+      });
+      testContext.user = { ...other };
+      const req = new Request("http://localhost/api/notifications/ack", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deliveryId }),
+      });
+      expect((await ackHandler(req)).status).toBe(404);
     });
 
     it("successfully confirms delivery receipt", async () => {

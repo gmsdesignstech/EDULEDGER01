@@ -152,11 +152,11 @@ export async function sendFcmMessage(
 
   const credentials = getFirebaseCredentials();
   if (!credentials) {
-    // Graceful offline / test environment simulation
-    const mockId = `mock_fcm_msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     return {
-      success: true,
-      providerMessageId: mockId,
+      success: false,
+      errorCode: "FCM_NOT_CONFIGURED",
+      errorMessage: "Firebase Cloud Messaging is not configured.",
+      retryable: false,
     };
   }
 
@@ -464,8 +464,12 @@ export async function dispatchNotificationEvent(
  * Client / Service Worker Acknowledgment
  * Confirms receipt and updates delivery status to DELIVERED
  */
-export async function confirmNotificationDelivery(deliveryId: string): Promise<boolean> {
-  return acknowledgeNotificationDelivery(deliveryId);
+export async function confirmNotificationDelivery(
+  institutionId: string,
+  userId: string,
+  deliveryId: string,
+): Promise<boolean> {
+  return acknowledgeNotificationDelivery(institutionId, userId, deliveryId);
 }
 
 /**
@@ -495,7 +499,11 @@ export async function retryPendingDeliveries(limit: number = 20): Promise<{ retr
     });
 
     if (fcmResult.success) {
-      await acknowledgeNotificationDelivery(item.id);
+      await updateNotificationDeliveryStatus(item.id, {
+        status: "SENT",
+        providerMessageId: fcmResult.providerMessageId,
+        sentAt: new Date().toISOString(),
+      });
       succeeded++;
     } else if (fcmResult.unregistered) {
       await revokeDeviceToken(item.token);

@@ -1,51 +1,17 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { usePathname } from "next/navigation";
 import { Bell, BellOff, Check, Loader2 } from "lucide-react";
 
 export function NotificationPushManager() {
+  const pathname = usePathname();
   const [permission, setPermission] = useState<NotificationPermission>("default");
   const [isSubscribing, setIsSubscribing] = useState(false);
   const [supported, setSupported] = useState(false);
   const [showPrompt, setShowPrompt] = useState(false);
 
-  useEffect(() => {
-    if (typeof window !== "undefined" && "serviceWorker" in navigator && "Notification" in window) {
-      setSupported(true);
-      setPermission(Notification.permission);
-
-      // Register the EduLedger Firebase Messaging service worker
-      navigator.serviceWorker
-        .register("/firebase-messaging-sw.js", { scope: "/" })
-        .then((registration) => {
-          // If already granted, ensure token is registered
-          if (Notification.permission === "granted") {
-            syncPushToken(registration).catch(() => {});
-          } else if (Notification.permission === "default") {
-            setShowPrompt(true);
-          }
-        })
-        .catch((err) => {
-          console.warn("[PushManager] SW registration error:", err);
-        });
-
-      // Listen for foreground push messages relayed by the service worker
-      const handleMessage = (event: MessageEvent) => {
-        if (event.data && event.data.type === "PUSH_RECEIVED") {
-          window.dispatchEvent(
-            new CustomEvent("eduledger:push-received", { detail: event.data.payload })
-          );
-        }
-      };
-
-      navigator.serviceWorker.addEventListener("message", handleMessage);
-      return () => {
-        navigator.serviceWorker.removeEventListener("message", handleMessage);
-      };
-    }
-  }, []);
-
-  const syncPushToken = async (registration: ServiceWorkerRegistration) => {
+  const syncPushToken = useCallback(async (registration: ServiceWorkerRegistration) => {
     try {
       let sub = await registration.pushManager.getSubscription();
       if (!sub) {
@@ -58,7 +24,8 @@ export function NotificationPushManager() {
         sub = await registration.pushManager.subscribe(options).catch(() => null);
       }
 
-      const token = sub ? JSON.stringify(sub) : `web_fcm_token_${window.crypto.randomUUID()}`;
+      if (!sub) return;
+      const token = JSON.stringify(sub);
       await fetch("/api/notifications/push-token", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -68,10 +35,65 @@ export function NotificationPushManager() {
           userAgent: navigator.userAgent,
         }),
       });
-    } catch (e) {
+    } catch {
       // safe fallback
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !("serviceWorker" in navigator)) return;
+
+    let active = true;
+    const isAuthenticatedPortal =
+      pathname.startsWith("/dashboard") ||
+      (pathname.startsWith("/parent") && pathname !== "/parent/login") ||
+      (pathname.startsWith("/teacher") && pathname !== "/teacher/login") ||
+      (pathname.startsWith("/student") && pathname !== "/student/login");
+    const canUsePush =
+      isAuthenticatedPortal && "Notification" in window && "PushManager" in window;
+    setSupported(canUsePush);
+    if (!canUsePush) setShowPrompt(false);
+    if ("Notification" in window) setPermission(Notification.permission);
+
+    // Register the PWA worker even when the browser does not support push.
+    navigator.serviceWorker
+      .register("/sw.js", { scope: "/" })
+      .then((registration) => {
+        if (!active || !canUsePush) return;
+        if (Notification.permission === "granted") {
+          syncPushToken(registration).catch(() => {});
+        } else if (Notification.permission === "default") {
+          let dismissed = false;
+          try {
+            dismissed = sessionStorage.getItem("eduledger_push_prompt_dismissed") === "true";
+          } catch {
+            // The prompt remains available if browser storage is restricted.
+          }
+          setShowPrompt(!dismissed);
+        }
+      })
+      .catch(() => {
+        // PWA installation and offline navigation fail safely if worker setup is blocked.
+      });
+
+    if (canUsePush) {
+      const handleMessage = (event: MessageEvent) => {
+        if (event.data?.type === "PUSH_RECEIVED") {
+          window.dispatchEvent(
+            new CustomEvent("eduledger:push-received", { detail: event.data.payload }),
+          );
+        }
+      };
+      navigator.serviceWorker.addEventListener("message", handleMessage);
+      return () => {
+        active = false;
+        navigator.serviceWorker.removeEventListener("message", handleMessage);
+      };
+    }
+    return () => {
+      active = false;
+    };
+  }, [pathname, syncPushToken]);
 
   const handleEnablePush = useCallback(async () => {
     if (!supported) return;
@@ -83,6 +105,13 @@ export function NotificationPushManager() {
         const reg = await navigator.serviceWorker.ready;
         await syncPushToken(reg);
         setShowPrompt(false);
+      } else {
+        setShowPrompt(false);
+        try {
+          sessionStorage.setItem("eduledger_push_prompt_dismissed", "true");
+        } catch {
+          // Permission remains under the browser's control.
+        }
       }
     } catch (e) {
       console.warn("[PushManager] Request permission failed:", e);
@@ -93,6 +122,11 @@ export function NotificationPushManager() {
 
   const handleDismissPrompt = () => {
     setShowPrompt(false);
+    try {
+      sessionStorage.setItem("eduledger_push_prompt_dismissed", "true");
+    } catch {
+      // Dismissing still hides the prompt for this render.
+    }
   };
 
   if (!supported || !showPrompt || permission === "granted" || permission === "denied") {

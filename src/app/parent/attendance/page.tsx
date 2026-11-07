@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiJson } from "@/lib/api-response";
 import { useEffect, useState } from "react";
 import {
   CalendarCheck2,
@@ -52,10 +53,10 @@ export default function ParentAttendancePage() {
     fetch(url)
       .then(async (res) => {
         if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
+          const err = await readApiJson(res).catch(() => ({}));
           throw new Error(err.error || "Failed to load attendance.");
         }
-        return res.json();
+        return readApiJson(res);
       })
       .then((data) => {
         if (active) {

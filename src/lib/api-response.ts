@@ -18,6 +18,7 @@ function messageFrom(body: unknown, fallback: string) {
 
 /** Parse an API response without ever leaking JSON/HTML parser errors to the UI. */
 export async function parseApiResponse<T>(response: Response, fallback = "The request could not be completed."): Promise<T> {
+  if (response.status === 204) return {} as T;
   const text = await response.text();
   let body: unknown = null;
 
@@ -35,4 +36,20 @@ export async function parseApiResponse<T>(response: Response, fallback = "The re
   if (!response.ok) throw new ApiResponseError(messageFrom(body, fallback), response.status);
   if (body === null) throw new ApiResponseError("The server returned an empty response. Please try again.", response.status);
   return body as T;
+}
+
+/** Read a JSON API response without surfacing the browser's raw JSON parser error. */
+export async function readApiJson<T = any>(response: Response): Promise<T> {
+  if (response.status === 204) return {} as T;
+  const text = await response.text();
+  if (!text.trim()) {
+    if (!response.ok) return { error: `The request failed (${response.status}).` } as T;
+    throw new ApiResponseError("The server returned an empty response. Please try again.", response.status);
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    if (!response.ok) return { error: `The request failed (${response.status}).` } as T;
+    throw new ApiResponseError("The server returned an invalid response. Please try again.", response.status);
+  }
 }

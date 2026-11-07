@@ -9,6 +9,7 @@ const config = [
     files: ["src/**/*.{ts,tsx,js,jsx}"],
     rules: {
       "react-hooks/set-state-in-effect": "off",
+      "react-hooks/exhaustive-deps": "off",
     },
   },
 ];

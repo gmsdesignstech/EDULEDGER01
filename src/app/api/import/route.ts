@@ -41,7 +41,7 @@ const requestSchema = z.object({
     "messages",
   ]),
   rows: z
-    .array(z.record(z.union([z.string(), z.number(), z.null()])))
+    .array(z.record(z.string(), z.union([z.string(), z.number(), z.null()])))
     .min(1)
     .max(100),
   rowOffset:z.number().int().min(0).max(5000).default(0),

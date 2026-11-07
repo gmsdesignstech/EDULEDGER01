@@ -233,6 +233,22 @@ export function AdminOverview({
       tone: "bg-gradient-to-r from-amber-600 to-orange-500",
       badge: "Next 30 days",
     },
+    {
+      label: "13. WhatsApp Add-on Subscribers",
+      value: number(finance.activeWhatsAppAddons),
+      detail: `${number(finance.pendingWhatsAppAddons)} pending · ${number(finance.expiredWhatsAppAddons)} expired`,
+      icon: CreditCard,
+      tone: "bg-gradient-to-r from-green-600 to-emerald-500",
+      badge: "Active entitlement",
+    },
+    {
+      label: "14. WhatsApp Add-on Revenue",
+      value: money(finance.whatsappAddonRevenue),
+      detail: "Paid add-on orders with a recorded Razorpay payment ID",
+      icon: CircleDollarSign,
+      tone: "bg-gradient-to-r from-teal-600 to-cyan-500",
+      badge: "Gross receipts",
+    },
   ] as const;
 
   return (
@@ -293,10 +309,10 @@ export function AdminOverview({
       </header>
 
       {/* 12 Live Statistics Grid */}
-      <section aria-label="12 Live Statistics">
+      <section aria-label="14 Live Statistics">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
-            Platform-Wide Live Metrics (12 Real-Time Stats)
+            Platform-Wide Live Metrics (14 Database Metrics)
           </h2>
           <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
             ● Live Database Sync

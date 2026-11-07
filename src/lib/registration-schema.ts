@@ -10,7 +10,7 @@ export const registrationSchema = z.object({
     .regex(/[A-Z]/, "Password must include an uppercase letter.")
     .regex(/[0-9]/, "Password must include a number."),
   acceptedTerms: z.literal(true, {
-    errorMap: () => ({ message: "You must accept the Terms of Service and Privacy Policy." }),
+    error: "You must accept the Terms of Service and Privacy Policy.",
   }),
   studentCount: z.coerce.number().int().min(1).max(100000),
   subscriptionStartMonth: z.string(),

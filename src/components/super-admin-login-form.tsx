@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiJson } from "@/lib/api-response";
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -35,7 +36,7 @@ export function SuperAdminLoginForm() {
         body: JSON.stringify({ email, password }),
       });
 
-      const data = await response.json().catch(() => null);
+      const data = await readApiJson(response).catch(() => null);
 
       if (!response.ok) {
         throw new Error(

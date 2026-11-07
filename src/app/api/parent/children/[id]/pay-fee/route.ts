@@ -7,7 +7,7 @@ import { getParentChildFeeInvoice } from "@/lib/db";
 export const runtime = "nodejs";
 
 const schema = z.object({
-  feeId: z.string().uuid(),
+  feeId: z.string().trim().min(1).max(100),
   amount: z.coerce.number().positive().optional(),
 });
 
@@ -48,50 +48,30 @@ export async function POST(
     : fee.pendingAmount;
 
   try {
-    const keyId = process.env.RAZORPAY_KEY_ID?.trim();
-    if (keyId && /^rzp_(test|live)_/.test(keyId)) {
-      const order = await createRazorpayOrder({
-        amount: Math.round(payAmount * 100),
-        receipt: fee.invoiceNumber,
-        notes: {
-          feeId: fee.id,
-          studentId: id,
-          parentUserId: context.user.id,
+    const order = await createRazorpayOrder({
+      amount: Math.round(payAmount * 100),
+      receipt: fee.invoiceNumber,
+      notes: {
+        feeId: fee.id,
+        studentId: id,
+        institutionId: context.user.institutionId,
+        parentUserId: context.user.id,
+      },
+    });
+    return NextResponse.json(
+      {
+        order: {
+          id: order.id,
+          amount: order.amount,
+          currency: order.currency,
+          key: order.key,
         },
-      });
-      return NextResponse.json(
-        {
-          order: {
-            id: order.id,
-            amount: order.amount,
-            currency: order.currency,
-            key: order.key,
-          },
-          feeId: fee.id,
-          invoiceNumber: fee.invoiceNumber,
-          payAmount,
-        },
-        { headers: parentNoStore }
-      );
-    } else {
-      // Offline / Test mock order for local testing or unconfigured gateways
-      const mockOrderId = `order_test_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-      return NextResponse.json(
-        {
-          order: {
-            id: mockOrderId,
-            amount: Math.round(payAmount * 100),
-            currency: "INR",
-            key: "rzp_test_placeholder",
-          },
-          feeId: fee.id,
-          invoiceNumber: fee.invoiceNumber,
-          payAmount,
-          isMock: true,
-        },
-        { headers: parentNoStore }
-      );
-    }
+        feeId: fee.id,
+        invoiceNumber: fee.invoiceNumber,
+        payAmount,
+      },
+      { headers: parentNoStore }
+    );
   } catch (error) {
     return NextResponse.json(
       {

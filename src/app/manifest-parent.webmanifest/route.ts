@@ -11,7 +11,7 @@ export async function GET() {
     display: "standalone",
     background_color: "#ffffff",
     theme_color: "#2563eb",
-    orientation: "portrait-primary",
+    orientation: "any",
     scope: "/parent",
     icons: [
       {

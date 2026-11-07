@@ -21,6 +21,10 @@ export async function getRazorpayPayment(paymentId:string){
  }
  throw lastError;
 }
+export async function getRazorpayOrder(orderId:string){
+ const{data}=await razorpay<{id:string;amount:number;currency:string;notes?:Record<string,string|null>}> (`/orders/${encodeURIComponent(orderId)}`);
+ return data;
+}
 export async function getCapturedRazorpayPaymentForOrder(orderId:string){
  const{data}=await razorpay<{items?:Array<{id:string;order_id:string;amount:number;currency:string;status:string;captured:boolean}>}>(`/orders/${encodeURIComponent(orderId)}/payments`);
  const items=Array.isArray(data.items)?data.items:[];

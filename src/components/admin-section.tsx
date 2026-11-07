@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiJson } from "@/lib/api-response";
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
@@ -167,7 +168,7 @@ export function AdminSection({ section }: { section: string }) {
     try {
       const q = new URLSearchParams({ section, search, status, from, to });
       const response = await fetch(`/api/admin?${q}`, { cache: "no-store" }),
-        body = await response.json();
+        body = await readApiJson(response);
       if (!response.ok)
         throw new Error(body.error || "Unable to load Super Admin data.");
       setData(body);
@@ -486,15 +487,24 @@ async function statusUpdate(
   status: string,
   refresh: () => void,
 ) {
+  let reason: string | undefined;
+  if (type === "school-status") {
+    if (!window.confirm(`Change this school's status to ${status}?`)) return;
+    reason = window.prompt("Enter the reason for this school status change (5–500 characters):")?.trim();
+    if (!reason || reason.length < 5 || reason.length > 500) {
+      alert("A reason of 5–500 characters is required. No change was made.");
+      return;
+    }
+  }
   const response = await fetch("/api/admin", {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ type, id, status }),
+    body: JSON.stringify({ type, id, status, ...(reason ? { reason } : {}) }),
   });
   if (response.ok) {
     refresh();
   } else {
-    alert((await response.json()).error || "Status update failed.");
+    alert((await readApiJson(response)).error || "Status update failed.");
   }
 }
 
@@ -543,7 +553,7 @@ function SchoolsTable({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "extend", days: Number(renewDays) }),
       });
-      const res = await response.json().catch(() => null);
+      const res = await readApiJson(response).catch(() => null);
       if (!response.ok) throw new Error(res?.error || "Renewal failed.");
       alert(`Subscription extended successfully by ${renewDays} days.`);
       closeModal();
@@ -930,7 +940,7 @@ function SubscriptionsTable({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action, days }),
       });
-      const body = await response.json().catch(() => null);
+      const body = await readApiJson(response).catch(() => null);
       if (!response.ok)
         throw new Error(body?.error || "Subscription update failed.");
       alert(`Subscription successfully updated.`);
@@ -1840,7 +1850,7 @@ function Profile({ data }: { data: Data }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ type, currentPassword, newPassword }),
       });
-      const body = await response.json().catch(() => null);
+      const body = await readApiJson(response).catch(() => null);
       if (!response.ok)
         throw new Error(body?.error || "Security update failed.");
       setMessage(body?.message || "Security settings updated.");
@@ -1988,7 +1998,7 @@ function AdminSettings({ data }: { data: Data }) {
         },
       }),
     });
-    const body = await response.json().catch(() => null);
+    const body = await readApiJson(response).catch(() => null);
     setMessage(
       response.ok
         ? "Platform and subscription lifecycle settings saved successfully."

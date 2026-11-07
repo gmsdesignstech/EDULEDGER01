@@ -71,3 +71,5 @@ Razorpay configuration uses `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, and `RAZOR
 
 The database layer is tenant-aware through `institutionId`, includes indexed operational tables, and uses transactions for account creation, admissions, payments, attendance and subscription activation. Health, sitemap, robots, security headers and reduced-motion behavior are included.
 "# EDULEDGER01" 
+
+- Before deploying student photo or timetable publication changes, use an isolated staging database and follow `STAGING_ACCEPTANCE.md` to verify its identity and backup. Run the guarded migration with `STAGING_DATABASE_URL` and both confirmation flags. Never point this runner at production.

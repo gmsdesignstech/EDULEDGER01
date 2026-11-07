@@ -1,4 +1,5 @@
 "use client";
+import { readApiJson } from "@/lib/api-response";
 import { useEffect, useRef, useState } from "react";
 import { Loader2, Trash2, X } from "lucide-react";
 
@@ -7,7 +8,7 @@ let permissionRequest:Promise<boolean>|undefined;
 function canManageRecords(){
   permissionRequest??=fetch("/api/auth/me",{credentials:"same-origin"}).then(async response=>{
     if(!response.ok)return false;
-    const result=await response.json();
+    const result=await readApiJson(response);
     return ["SCHOOL_ADMIN","SUPER_ADMIN"].includes(result.user?.role);
   }).catch(()=>false);
   return permissionRequest;
@@ -24,7 +25,7 @@ export function DeleteRecordButton({label,details,url,onComplete,onError,action=
     lock.current=true;setSaving(true);setError("");
     try{
       const response=await fetch(url,{method,headers:{"Content-Type":"application/json"},body:JSON.stringify({...requestBody,reason:reason.trim()})});
-      const data=await response.json().catch(()=>({}));
+      const data=await readApiJson(response).catch(()=>({}));
       if(!response.ok)throw new Error(data.error||`Unable to ${action.toLowerCase()} this record.`);
       setOpen(false);setReason("");await onComplete();
     }catch(cause){const message=cause instanceof Error?cause.message:`Unable to ${action.toLowerCase()} this record.`;setError(message);onError?.(message)}

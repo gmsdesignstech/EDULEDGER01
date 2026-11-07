@@ -5,7 +5,7 @@ import { currentUser } from "@/lib/session";
 import { moduleConfigs } from "@/config/modules";
 export const runtime = "nodejs";
 const noStore={"Cache-Control":"private, no-store"};
-const bodySchema = z.record(z.string().min(1).max(500));
+const bodySchema = z.record(z.string(), z.string().min(1).max(500));
 export async function GET(
   _: Request,
   { params }: { params: Promise<{ module: string }> },

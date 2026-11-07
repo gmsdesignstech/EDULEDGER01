@@ -1,6 +1,9 @@
 "use client";
+import Image from "next/image";
+import { StudentPhotoImage } from "./student-photo-image";
+import { readApiJson } from "@/lib/api-response";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUpRight,
   Eye,
@@ -54,6 +57,7 @@ type Student = {
   pendingFee: number;
   status: string;
   createdAt: string;
+  photoPath?: string;
 };
 type ConfiguredClass = { name: string; sections: string[] };
 type StudentsPayload = {
@@ -258,6 +262,8 @@ export function Students() {
         totalFee: String(f.get("totalFee") || 0),
         academicYear,
       };
+    const photoFile = f.get("studentPhoto");
+    delete body.studentPhoto;
     if (!editing) {
       body.whatsappEnabled = false;
       body.whatsappAttendance = false;
@@ -278,20 +284,34 @@ export function Students() {
         );
       const contentType = r.headers.get("content-type") ?? "";
       const j = contentType.includes("application/json")
-        ? await r.json()
+        ? await readApiJson(r)
         : null;
       if (!r.ok)
         throw new Error(
           j?.error || `Could not save the student (${r.status}).`,
         );
+      const savedStudent = j.student || editing;
+      let photoFailure = "";
+      if (photoFile instanceof File && photoFile.size > 0) {
+        const photoBody = new FormData();
+        photoBody.set("photo", photoFile);
+        try {
+          const photoResponse = await fetch(`/api/students/${savedStudent.id}/photo`, { method: "PUT", body: photoBody });
+          const photoResult = await readApiJson(photoResponse);
+          if (!photoResponse.ok) photoFailure = photoResult.error || "The photo could not be uploaded.";
+        } catch {
+          photoFailure = "The photo upload could not be completed.";
+        }
+      }
       await load();
       setOpen(false);
       setEditing(null);
       setSuccess(
         wasEditing
           ? "Student updated successfully."
-          : `Student added successfully. Roll Number: ${j.student?.rollNumber || ""}`,
+          : `Student added successfully. Roll Number: ${j.student?.rollNumber || ""}${photoFailure ? " Photo upload failed; edit this student to retry." : ""}`,
       );
+      if (photoFailure) setError(`Student was saved, but the photo was not: ${photoFailure}`);
     } catch (e) {
       setFormError(
         e instanceof Error
@@ -316,7 +336,7 @@ export function Students() {
       const response = await fetch("/api/students/generate-ids", {
           method: "POST",
         }),
-        body = await response.json();
+        body = await readApiJson(response);
       if (!response.ok)
         throw new Error(body.error || "Could not generate Student IDs.");
       await load();
@@ -343,7 +363,7 @@ export function Students() {
       const response = await fetch("/api/subscription/status", {
           cache: "no-store",
         }),
-        payload = (await response.json()) as {
+        payload = (await readApiJson(response)) as {
           subscription: SubscriptionSummary;
         };
       if (!response.ok)
@@ -550,13 +570,7 @@ export function Students() {
                   <tr className="hover:bg-canvas/60" key={s.id}>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-3">
-                        <span className="grid size-9 place-items-center rounded-full bg-brand/10 font-bold text-brand">
-                          {s.name
-                            .split(" ")
-                            .map((x) => x[0])
-                            .slice(0, 2)
-                            .join("")}
-                        </span>
+                        {s.photoPath ? <StudentPhotoImage studentId={s.id} name={s.name} size={36} className="size-9 rounded-full object-cover"/> : <span aria-hidden="true" className="grid size-9 place-items-center rounded-full bg-brand/10 font-bold text-brand">{s.name.split(" ").map((x) => x[0]).slice(0, 2).join("")}</span>}
                         <b>{s.name}</b>
                       </div>
                     </td>
@@ -708,6 +722,7 @@ export function Students() {
         <StudentView
           student={view}
           onClose={() => setView(null)}
+          onEdit={() => { setEditing(view); setView(null); setFormError(""); setOpen(true); }}
           onDemote={() => {
             setDemoting(view);
             setView(null);
@@ -834,7 +849,25 @@ function StudentModal({
     ),
     availableSections =
       classes.find((x) => x.name === selectedClass)?.sections || [],
-    [selectedQuota, setSelectedQuota] = useState(d.specialQuota || "");
+    [selectedQuota, setSelectedQuota] = useState(d.specialQuota || ""),
+    [photoUrl,setPhotoUrl]=useState(student?.photoPath?`/api/students/${student.id}/photo`:""),
+    [photoError,setPhotoError]=useState(""),
+    [photoBusy,setPhotoBusy]=useState(false),
+    photoInput=useRef<HTMLInputElement>(null);
+  useEffect(()=>()=>{if(photoUrl.startsWith("blob:"))URL.revokeObjectURL(photoUrl)},[photoUrl]);
+  function rejectPhoto(message:string){setPhotoError(message);if(photoInput.current)photoInput.current.value=""}
+  async function uploadPhoto(file:File){
+    setPhotoError("");if(file.size===0){rejectPhoto("The selected file is empty.");return}if(file.size>5*1024*1024){rejectPhoto("Photo must be 5 MB or smaller.");return}
+    if(!["image/jpeg","image/png","image/webp"].includes(file.type)){rejectPhoto("Choose a JPG, PNG, or WebP photo.");return}
+    let decoded:ImageBitmap;try{decoded=await createImageBitmap(file)}catch{rejectPhoto("This image is corrupted or cannot be decoded.");return}const validSize=decoded.width>=120&&decoded.height>=120&&decoded.width<=8000&&decoded.height<=8000;decoded.close();if(!validSize){rejectPhoto("Photo dimensions must be between 120 × 120 and 8000 × 8000 pixels.");return}
+    const preview=URL.createObjectURL(file);setPhotoUrl(preview);if(!student)return;
+    setPhotoBusy(true);const body=new FormData();body.set("photo",file);
+    try{const response=await fetch(`/api/students/${student.id}/photo`,{method:"PUT",body}),payload=await readApiJson(response);if(!response.ok)throw new Error(payload.error||"Could not save photo.");setPhotoUrl(`${payload.photoUrl}?v=${Date.now()}`)}catch(error){setPhotoUrl(student.photoPath?`/api/students/${student.id}/photo`:"");setPhotoError(error instanceof Error?error.message:"Could not save photo.")}finally{setPhotoBusy(false)}
+  }
+  async function removePhoto(){
+    if(typeof window!=="undefined"&&!window.confirm("Are you sure you want to remove this student's photograph?"))return;
+    if(!student){setPhotoUrl("");if(photoInput.current)photoInput.current.value="";return}setPhotoBusy(true);try{const response=await fetch(`/api/students/${student.id}/photo`,{method:"DELETE"});if(!response.ok)throw new Error("Could not remove photo.");setPhotoUrl("")}catch(error){setPhotoError(error instanceof Error?error.message:"Could not remove photo.")}finally{setPhotoBusy(false)}
+  }
   return (
     <div className="fixed inset-0 z-[70] grid place-items-center bg-black/45 p-4">
       <form
@@ -856,6 +889,10 @@ function StudentModal({
           </button>
         </div>
         <div className="mt-6 grid gap-4 sm:grid-cols-2">
+          <div className="flex items-center gap-4 rounded-2xl border p-4 sm:col-span-2">
+            {photoUrl?<Image src={photoUrl} unoptimized width={80} height={80} alt="Student photo preview" className="size-20 rounded-2xl object-cover"/>:<div className="grid size-20 place-items-center rounded-2xl bg-violet-100 font-black text-violet-700">{(d.name||"Student").split(/\s+/).map(word=>word[0]).slice(0,2).join("")}</div>}
+            <div className="flex-1"><p className="font-bold">Student photograph</p><p className="text-xs text-muted">JPG, PNG or WebP · up to 5 MB · minimum 120 × 120 pixels</p><div className="mt-2 flex flex-wrap gap-2"><label className="btn-secondary cursor-pointer">{photoUrl?"Change photo":"Upload photo"}<input ref={photoInput} name="studentPhoto" className="sr-only" type="file" accept="image/jpeg,image/png,image/webp" disabled={photoBusy} onChange={event=>{const file=event.target.files?.[0];if(file)void uploadPhoto(file)}}/></label>{photoUrl&&<button type="button" className="btn-secondary" disabled={photoBusy} onClick={()=>void removePhoto()}>Remove</button>}{photoBusy&&<span className="text-sm text-muted">Saving…</span>}</div>{photoError&&<p role="alert" className="mt-2 text-sm text-red-600">{photoError}</p>}</div>
+          </div>
           <Field name="name" label="Student name" value={d.name} />
           <Field
             name="admission"
@@ -1103,12 +1140,14 @@ function Field({
 function StudentView({
   student: s,
   onClose,
+  onEdit,
   onDemote,
   canDemote,
   hasLowerClass,
 }: {
   student: Student;
   onClose: () => void;
+  onEdit: () => void;
   onDemote: () => void;
   canDemote: boolean;
   hasLowerClass: boolean;
@@ -1124,7 +1163,7 @@ function StudentView({
   >([]);
   useEffect(() => {
     fetch(`/api/student-promotions?mode=student-history&studentId=${s.id}`)
-      .then((r) => (r.ok ? r.json() : { history: [] }))
+      .then((r) => (r.ok ? readApiJson(r) : { history: [] }))
       .then((j) => setHistory(j.history || []));
   }, [s.id]);
   return (
@@ -1132,6 +1171,7 @@ function StudentView({
       <div className="card max-h-[92vh] w-full max-w-xl overflow-y-auto p-7">
         <div className="flex justify-between">
           <div>
+            {s.photoPath ? <StudentPhotoImage studentId={s.id} name={s.name} size={72} className="mb-3 size-[72px] rounded-2xl object-cover"/> : <span aria-hidden="true" className="mb-3 grid size-[72px] place-items-center rounded-2xl bg-violet-100 text-xl font-black text-violet-700">{s.name.split(/\s+/).map(part=>part[0]).slice(0,2).join("").toUpperCase()}</span>}
             <p className="label">Student profile</p>
             <h2 className="mt-2 text-2xl font-black">{s.name}</h2>
             <p className="text-muted">
@@ -1245,6 +1285,7 @@ function StudentView({
           </div>
         </div>
         <div className="mt-6 grid gap-2 sm:grid-cols-2">
+          <button className="btn-secondary" onClick={onEdit}>Edit student and photo</button>
           <Link
             className="btn-secondary"
             href={`/dashboard/payment-history?studentId=${s.id}`}

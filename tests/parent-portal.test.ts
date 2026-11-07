@@ -7,10 +7,12 @@ import {
   addTimetableEntry,
   createAccount,
   createParentInvitation,
+  createManagedExamination,
   expireParentInvitation,
   getCompleteSettings,
   getInstitution,
   linkStudentToParent,
+  managedResultDetail,
   parentChildAttendance,
   parentChildFees,
   parentChildHomework,
@@ -22,6 +24,8 @@ import {
   recordPayment,
   saveCompleteSettings,
   saveStudentAttendance,
+  saveManagedMarks,
+  transitionManagedExamination,
 } from "../src/lib/db";
 import { configureSchoolCode } from "./configure-school-code";
 
@@ -42,6 +46,48 @@ async function setupClasses(institutionId: string, adminId: string, classes: Arr
 }
 
 describe("EduLedger Parent Portal", () => {
+  it("only exposes official published result snapshots and preserves them after a correction reopen", async () => {
+    const stamp = `${Date.now()}-${Math.random()}`;
+    const admin = await createAccount({
+      name: "Results Admin",
+      email: `results-admin-${stamp}@school.edu`,
+      institution: `Results School ${stamp}`,
+      passwordHash: await hash("password123", 4),
+    });
+    await configureSchoolCode(admin.institutionId, admin.id);
+    const year = (await getInstitution(admin.institutionId)).academicYear;
+    await setupClasses(admin.institutionId, admin.id, [{ name: "Class 7", sections: ["A"] }]);
+    const student = await addStudent(admin.institutionId, {
+      name: "Published Result Student", admission: `ADM-R-${stamp}`, gender: "Female",
+      dateOfBirth: "2013-01-01", className: "Class 7", section: "A", rollNumber: "1",
+      parent: "Parent", parentPhone: "9876543210", parentEmail: `parent-${stamp}@example.com`,
+      address: "School Road", admissionDate: "2026-04-01", totalFee: 1000,
+      dueDate: "2027-03-31", academicYear: year,
+    }, admin.id);
+    const examination = await createManagedExamination(admin.institutionId, admin.id, {
+      name: "Unit Test", academicYear: year, className: "Class 7", section: "A",
+      startDate: "2026-10-01", endDate: "2026-10-01", subjects: [
+        { name: "Mathematics", maximumMarks: 100, passingMarks: 35, required: true },
+      ],
+    });
+    const subjectId = (await managedResultDetail(admin.institutionId, examination!.id)).subjects[0].id;
+    expect(await parentChildResults(admin.institutionId, student.id)).toEqual([]);
+    await transitionManagedExamination(admin.institutionId, admin.id, examination!.id, "open");
+    await saveManagedMarks(admin.institutionId, admin.id, examination!.id, subjectId, [
+      { studentId: student.id, markStatus: "Scored", obtainedMarks: 80, remarks: "Good work" },
+    ]);
+    await transitionManagedExamination(admin.institutionId, admin.id, examination!.id, "close");
+    await transitionManagedExamination(admin.institutionId, admin.id, examination!.id, "verify");
+    await transitionManagedExamination(admin.institutionId, admin.id, examination!.id, "approve");
+    await transitionManagedExamination(admin.institutionId, admin.id, examination!.id, "publish");
+    expect((await parentChildResults(admin.institutionId, student.id))[0]?.marks).toBe(80);
+    await transitionManagedExamination(admin.institutionId, admin.id, examination!.id, "reopen");
+    await saveManagedMarks(admin.institutionId, admin.id, examination!.id, subjectId, [
+      { studentId: student.id, markStatus: "Scored", obtainedMarks: 90, remarks: "Corrected" },
+    ]);
+    expect((await parentChildResults(admin.institutionId, student.id))[0]?.marks).toBe(80);
+  });
+
   it("activates parent account via school-issued invitation code and links student", async () => {
     const stamp = `${Date.now()}-${Math.random()}`;
     const admin = await createAccount({

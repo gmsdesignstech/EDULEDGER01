@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiJson } from "@/lib/api-response";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
@@ -104,10 +105,10 @@ export default function TeacherDashboardPage() {
     fetch("/api/teacher/dashboard")
       .then(async (res) => {
         if (!res.ok) {
-          const err = await res.json().catch(() => null);
+          const err = await readApiJson(res).catch(() => null);
           throw new Error(err?.error || "Failed to load teacher dashboard");
         }
-        return res.json();
+        return readApiJson(res);
       })
       .then((payload) => {
         setData(payload);

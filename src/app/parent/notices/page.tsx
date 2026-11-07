@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiJson } from "@/lib/api-response";
 import { useEffect, useState } from "react";
 import {
   Calendar,
@@ -29,10 +30,10 @@ export default function ParentNoticesPage() {
     fetch("/api/parent/announcements")
       .then(async (res) => {
         if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
+          const err = await readApiJson(res).catch(() => ({}));
           throw new Error(err.error || "Failed to load notices.");
         }
-        return res.json();
+        return readApiJson(res);
       })
       .then((data) => {
         if (active) setNotices(data.announcements || []);

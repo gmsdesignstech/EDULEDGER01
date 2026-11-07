@@ -3,7 +3,6 @@ import { beforeAll, describe, expect, it } from "vitest";
 let database: typeof import("../src/lib/db");
 
 beforeAll(async () => {
-  process.env.SQLITE_DATABASE_PATH = ":memory:";
   database = await import("../src/lib/db");
 });
 

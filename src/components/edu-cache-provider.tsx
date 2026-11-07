@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiJson } from "@/lib/api-response";
 import { createContext, useCallback, useContext, useMemo, useRef, type ReactNode } from "react";
 import useSWR, { SWRConfig, useSWRConfig, type SWRConfiguration } from "swr";
 
@@ -21,7 +22,7 @@ export const eduCacheProfiles = {
 
 async function jsonFetcher<T>([, url]: readonly [string, string]): Promise<T> {
   const response = await fetch(url, { headers: { Accept: "application/json" } });
-  const body = await response.json().catch(() => ({}));
+  const body = await readApiJson(response).catch(() => ({}));
   if (!response.ok) throw new Error(body.error || "Unable to load data.");
   return body as T;
 }

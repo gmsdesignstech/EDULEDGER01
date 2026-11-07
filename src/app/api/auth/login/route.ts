@@ -2,13 +2,13 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { compare } from "bcryptjs";
 import { z } from "zod";
-import { createSession, findUserByEmail, getSubscription, recordUserLogin } from "@/lib/db";
+import { createSession, findUserByEmailOrPhone, getSubscription, recordUserLogin } from "@/lib/db";
 import { SESSION_COOKIE } from "@/lib/session";
 import { logServerError } from "@/lib/server-errors";
 import { clearRateLimit, consumeRateLimit, rateLimitKey } from "@/lib/security";
 export const runtime = "nodejs";
 const schema = z.object({
-  email: z.string().trim().toLowerCase().email(),
+  email: z.string().trim().min(3).max(128),
   password: z.string().min(8).max(128),
 });
 const DUMMY_PASSWORD_HASH="$2a$12$8l5KtqvhH0dz5.Xgqt2C5OsW.0qczNmbvweNaNfeeknN0StkH55Wq";
@@ -25,11 +25,11 @@ export async function POST(request: Request) {
     {status:429,headers:{"Retry-After":String(limit.retryAfterSeconds),"Cache-Control":"private, no-store"}},
   );
   try {
-    const user = await findUserByEmail(parsed.data.email);
+    const user = await findUserByEmailOrPhone(parsed.data.email);
     const passwordMatches=await compare(parsed.data.password,user?.passwordHash||DUMMY_PASSWORD_HASH);
     if (!user || user.status!=="Active" || !passwordMatches)
       return NextResponse.json(
-        { error: "Email or password is incorrect." },
+        { error: "Email, mobile number or password is incorrect." },
         { status: 401 },
       );
     const session = await createSession(user.id);

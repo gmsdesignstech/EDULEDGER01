@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiJson } from "@/lib/api-response";
 import { useEffect, useState } from "react";
 import {
   AlertCircle,
@@ -33,7 +34,7 @@ export default function TeacherNotificationsPage() {
     fetch("/api/teacher/notifications")
       .then(async (res) => {
         if (!res.ok) throw new Error("Could not load notifications");
-        return res.json();
+        return readApiJson(res);
       })
       .then((data) => {
         setItems(data.items || []);

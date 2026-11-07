@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiJson } from "@/lib/api-response";
 import { useState } from "react";
 import {
   Building2,
@@ -17,6 +18,7 @@ import {
   UserCheck,
 } from "lucide-react";
 import { useParentContext } from "@/components/parent-context";
+import { StudentPhotoImage } from "@/components/student-photo-image";
 
 export default function ParentProfilePage() {
   const { selectedChild, children: childList, refreshChildren } = useParentContext();
@@ -64,7 +66,7 @@ export default function ParentProfilePage() {
         }),
       });
 
-      const data = await res.json();
+      const data = await readApiJson(res);
       if (!res.ok) {
         throw new Error(data.error || "Failed to link child.");
       }
@@ -199,9 +201,7 @@ export default function ParentProfilePage() {
       <div className="rounded-3xl border bg-panel p-6 shadow-sm">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between border-b pb-6">
           <div className="flex items-center gap-4">
-            <span className="grid size-14 place-items-center rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-600 text-xl font-black text-white shadow-md">
-              {selectedChild.name[0]}
-            </span>
+            <StudentPhotoImage studentId={selectedChild.id} name={selectedChild.name} size={56} className="rounded-2xl object-cover shadow-md" />
             <div>
               <h2 className="text-xl font-black text-foreground">{selectedChild.name}</h2>
               <p className="text-xs text-muted">

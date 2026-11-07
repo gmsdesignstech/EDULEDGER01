@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { currentUser } from "@/lib/session";
 import { acknowledgeNotificationDelivery } from "@/lib/db";
 
 export const runtime = "nodejs";
@@ -9,6 +10,11 @@ const ackSchema = z.object({
 });
 
 export async function POST(request: Request) {
+  const user = await currentUser();
+  if (!user) {
+    return NextResponse.json({ error: "Unauthenticated" }, { status: 401 });
+  }
+
   const body = await request.json().catch(() => null);
   const parsed = ackSchema.safeParse(body);
   if (!parsed.success) {
@@ -16,7 +22,11 @@ export async function POST(request: Request) {
   }
 
   try {
-    const success = await acknowledgeNotificationDelivery(parsed.data.deliveryId);
+    const success = await acknowledgeNotificationDelivery(
+      user.institutionId,
+      user.id,
+      parsed.data.deliveryId,
+    );
     if (!success) {
       return NextResponse.json({ error: "Delivery not found" }, { status: 404 });
     }

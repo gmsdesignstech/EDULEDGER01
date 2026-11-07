@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiJson } from "@/lib/api-response";
 import NextLink from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
@@ -28,6 +29,8 @@ import { useEffect, useRef, useState } from "react";
 import { Logo } from "./logo";
 import { ThemeToggle } from "./theme";
 import { useParentContext } from "./parent-context";
+import { PortalNetworkStatus } from "./portal-network-status";
+import { logoutPortal } from "@/lib/portal-session";
 
 function Link(props: React.ComponentProps<typeof NextLink>) {
   return <NextLink prefetch={false} {...props} />;
@@ -66,7 +69,7 @@ export function ParentShell({
   useEffect(() => {
     let active = true;
     fetch("/api/parent/notifications")
-      .then((res) => (res.ok ? res.json() : null))
+      .then((res) => (res.ok ? readApiJson(res) : null))
       .then((data) => {
         if (active && data?.unread != null) {
           setUnreadCount(data.unread);
@@ -110,7 +113,7 @@ export function ParentShell({
 
   async function logout() {
     setLoggingOut(true);
-    await fetch("/api/auth/logout", { method: "POST" });
+    await logoutPortal(["eduledger_parent_child"]);
     router.replace("/parent/login");
     router.refresh();
   }
@@ -426,6 +429,7 @@ export function ParentShell({
 
         {/* Page Content */}
         <main className="p-4 pb-24 sm:p-6 lg:p-8 lg:pb-8">
+          <PortalNetworkStatus />
           {actualContent}
         </main>
       </div>

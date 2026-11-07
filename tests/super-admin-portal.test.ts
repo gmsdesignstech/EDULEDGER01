@@ -105,18 +105,20 @@ describe("EduLedger Super Admin Portal (Platform Owner Dashboard)", () => {
 
     const schoolId = account.institutionId;
 
+    await expect(adminSetSchoolStatus(account.id, schoolId, "Suspended", "  ")).rejects.toThrow("reason");
+
     // Suspend school
-    await adminSetSchoolStatus(account.id, schoolId, "Suspended");
+    await adminSetSchoolStatus(account.id, schoolId, "Suspended", "Verified policy violation");
     let schoolsList = await adminSchools({ search: `Audit School ${stamp}` });
     expect(schoolsList.items[0]).toMatchObject({ status: "Suspended" });
 
     // Deactivate school
-    await adminSetSchoolStatus(account.id, schoolId, "Inactive");
+    await adminSetSchoolStatus(account.id, schoolId, "Inactive", "Owner requested deactivation");
     schoolsList = await adminSchools({ search: `Audit School ${stamp}` });
     expect(schoolsList.items[0]).toMatchObject({ status: "Inactive" });
 
     // Reactivate school
-    await adminSetSchoolStatus(account.id, schoolId, "Active");
+    await adminSetSchoolStatus(account.id, schoolId, "Active", "Issue reviewed and resolved");
     schoolsList = await adminSchools({ search: `Audit School ${stamp}` });
     expect(schoolsList.items[0]).toMatchObject({ status: "Active" });
 
@@ -126,6 +128,7 @@ describe("EduLedger Super Admin Portal (Platform Owner Dashboard)", () => {
       (l) => l.schoolName === `Audit School ${stamp}` && String(l.action).includes("School"),
     );
     expect(schoolLog).toBeDefined();
+    expect(JSON.stringify(schoolLog?.details)).toContain("Verified policy violation");
   });
 
   it("manages subscription extension and manual renewal with audit trail", async () => {
@@ -171,5 +174,8 @@ describe("EduLedger Super Admin Portal (Platform Owner Dashboard)", () => {
     expect(finance.totalRevenue).toBeGreaterThanOrEqual(0);
     expect(typeof finance.monthRevenue).toBe("number");
     expect(finance.monthRevenue).toBeGreaterThanOrEqual(0);
+    expect(typeof finance.whatsappAddonRevenue).toBe("number");
+    expect(typeof finance.activeWhatsAppAddons).toBe("number");
+    expect(finance.grossPlatformRevenue).toBe(finance.totalRevenue + finance.whatsappAddonRevenue);
   });
 });

@@ -1,10 +1,11 @@
 "use client";
+import { readApiJson } from "@/lib/api-response";
 import useSWR from "swr";
 import type { SubscriptionSummary } from "@/lib/db";
 import { formatInr } from "@/lib/subscription-plans";
 
 type StatusResponse={subscription:SubscriptionSummary};
-const fetcher=async(url:string)=>{const response=await fetch(url,{cache:"no-store"});if(!response.ok)throw new Error("Unable to load subscription details.");return response.json() as Promise<StatusResponse>};
+const fetcher=async(url:string)=>{const response=await fetch(url,{cache:"no-store"});if(!response.ok)throw new Error("Unable to load subscription details.");return readApiJson(response) as Promise<StatusResponse>};
 
 export function SubscriptionDetails({subscription:initial}:{subscription:SubscriptionSummary}){
   const {data,error,isLoading,mutate}=useSWR<StatusResponse>("/api/subscription/status",fetcher,{fallbackData:{subscription:initial},refreshInterval:30000,revalidateOnFocus:true});

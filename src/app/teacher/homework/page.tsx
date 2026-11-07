@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiJson } from "@/lib/api-response";
 import { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
@@ -49,7 +50,7 @@ export default function TeacherHomeworkPage() {
   const [selectedScope, setSelectedScope] = useState<string>("");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [dueDate, setDueDate] = useState(
+  const [dueDate, setDueDate] = useState(() =>
     new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10)
   );
 
@@ -58,7 +59,7 @@ export default function TeacherHomeworkPage() {
     fetch("/api/teacher/homework")
       .then(async (res) => {
         if (!res.ok) throw new Error("Could not load homework records");
-        return res.json();
+        return readApiJson(res);
       })
       .then((data) => {
         setItems(data.items || []);
@@ -117,7 +118,7 @@ export default function TeacherHomeworkPage() {
       });
 
       if (!res.ok) {
-        const err = await res.json().catch(() => null);
+        const err = await readApiJson(res).catch(() => null);
         throw new Error(err?.error || "Could not assign homework");
       }
 

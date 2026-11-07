@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiJson } from "@/lib/api-response";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AlertCircle, Check, Loader2, LockKeyhole, Minus, Plus, RefreshCw, ShieldAlert } from "lucide-react";
@@ -90,7 +91,7 @@ export function WhatsAppAddonCheckout({
         method: "GET",
         credentials: "same-origin",
       });
-      const data = await response.json();
+      const data = await readApiJson(response);
 
       if (!response.ok) {
         const errMessage = data.error || "The active-student count is temporarily unavailable. Please retry.";
@@ -180,7 +181,7 @@ export function WhatsAppAddonCheckout({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
-      const order = (await orderResponse.json()) as {
+      const order = (await readApiJson(orderResponse)) as {
         id?: string;
         key?: string;
         amount?: number;
@@ -258,7 +259,7 @@ export function WhatsAppAddonCheckout({
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(result),
             });
-            const body = (await response.json()) as {
+            const body = (await readApiJson(response)) as {
               error?: string;
               addon?: {
                 studentCount: number;

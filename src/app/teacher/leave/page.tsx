@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiJson } from "@/lib/api-response";
 import { useEffect, useState } from "react";
 import {
   AlertCircle,
@@ -39,7 +40,7 @@ export default function TeacherLeavePage() {
     fetch("/api/teacher/leave")
       .then(async (res) => {
         if (!res.ok) throw new Error("Could not load leave records");
-        return res.json();
+        return readApiJson(res);
       })
       .then((data) => {
         setRequests(data.items || []);
@@ -73,7 +74,7 @@ export default function TeacherLeavePage() {
       });
 
       if (!res.ok) {
-        const err = await res.json().catch(() => null);
+        const err = await readApiJson(res).catch(() => null);
         throw new Error(err?.error || "Could not submit leave request");
       }
 

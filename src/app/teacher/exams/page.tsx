@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiJson } from "@/lib/api-response";
 import { useEffect, useState } from "react";
 import {
   AlertCircle,
@@ -83,7 +84,7 @@ export default function TeacherExamsPage() {
     fetch("/api/teacher/exams")
       .then(async (res) => {
         if (!res.ok) throw new Error("Could not load examinations");
-        return res.json();
+        return readApiJson(res);
       })
       .then((data) => {
         setExams(data.items || []);
@@ -104,10 +105,10 @@ export default function TeacherExamsPage() {
     fetch(`/api/teacher/exams?examId=${examId}`)
       .then(async (res) => {
         if (!res.ok) {
-          const err = await res.json().catch(() => null);
+          const err = await readApiJson(res).catch(() => null);
           throw new Error(err?.error || "Could not load exam details");
         }
-        return res.json();
+        return readApiJson(res);
       })
       .then((data) => {
         const detail: ExamDetail = data.detail;
@@ -204,11 +205,11 @@ export default function TeacherExamsPage() {
       });
 
       if (!res.ok) {
-        const err = await res.json().catch(() => null);
+        const err = await readApiJson(res).catch(() => null);
         throw new Error(err?.error || "Could not save marks");
       }
 
-      const result = await res.json();
+      const result = await readApiJson(res);
       setExamDetail(result.detail);
       populateRows(result.detail, selectedSubjectId);
       setSuccess("Marks saved successfully.");

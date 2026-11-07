@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiJson } from "@/lib/api-response";
 import { useEffect, useState } from "react";
 
 type Recipient = {
@@ -35,7 +36,7 @@ export function WhatsAppConsentManager() {
   useEffect(() => {
     fetch("/api/whatsapp/consent", { cache: "no-store" })
       .then(async response => {
-        const body = await response.json();
+        const body = await readApiJson(response);
         if (!response.ok) throw new Error(body.error || "Could not load consent settings.");
         setItems(body.recipients || []);
       })
@@ -54,7 +55,7 @@ export function WhatsAppConsentManager() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(item),
     });
-    const body = await response.json();
+    const body = await readApiJson(response);
     setBusy("");
     setNotice(response.ok ? `Consent settings saved for ${item.name}.` : body.error || "Could not save consent settings.");
   }

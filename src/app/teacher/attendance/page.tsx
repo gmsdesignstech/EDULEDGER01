@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiJson } from "@/lib/api-response";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
@@ -130,7 +131,7 @@ export default function TeacherAttendancePage() {
     fetch("/api/teacher/dashboard")
       .then(async (res) => {
         if (!res.ok) throw new Error("Could not load teacher profile");
-        return res.json();
+        return readApiJson(res);
       })
       .then((data) => {
         const asg: Assignment[] = data.assignments || [];
@@ -177,10 +178,10 @@ export default function TeacherAttendancePage() {
     fetch(`/api/teacher/attendance?${params.toString()}`)
       .then(async (res) => {
         if (!res.ok) {
-          const err = await res.json().catch(() => null);
+          const err = await readApiJson(res).catch(() => null);
           throw new Error(err?.error || "Could not load attendance sheet");
         }
-        return res.json();
+        return readApiJson(res);
       })
       .then((data) => {
         const list: AttendanceStudent[] = data.students || [];
@@ -207,7 +208,7 @@ export default function TeacherAttendancePage() {
     if (activeTab !== "monthly" || !selectedClass || !selectedSection || !academicYear) return;
     setMonthlyLoading(true);
     fetch(`/api/teacher/attendance?view=monthly&academicYear=${encodeURIComponent(academicYear)}&className=${encodeURIComponent(selectedClass)}&section=${encodeURIComponent(selectedSection)}&date=${encodeURIComponent(date)}&yearMonth=${encodeURIComponent(monthlyYearMonth)}`)
-      .then((r) => r.json())
+      .then((r) => readApiJson(r))
       .then((res) => {
         if (res.monthly) setMonthlyData(res.monthly);
       })
@@ -222,7 +223,7 @@ export default function TeacherAttendancePage() {
     const from = `${date.slice(0, 7)}-01`;
     const to = date;
     fetch(`/api/teacher/attendance?view=analytics&academicYear=${encodeURIComponent(academicYear)}&className=${encodeURIComponent(selectedClass)}&section=${encodeURIComponent(selectedSection)}&date=${encodeURIComponent(date)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`)
-      .then((r) => r.json())
+      .then((r) => readApiJson(r))
       .then((res) => {
         if (res.analytics) setAnalyticsData(res.analytics);
       })
@@ -275,11 +276,11 @@ export default function TeacherAttendancePage() {
       });
 
       if (!res.ok) {
-        const err = await res.json().catch(() => null);
+        const err = await readApiJson(res).catch(() => null);
         throw new Error(err?.error || "Failed to submit attendance");
       }
 
-      const result = await res.json();
+      const result = await readApiJson(res);
       setSuccess(
         isRecorded
           ? `Attendance correction recorded successfully for ${result.saved || students.length} students.`

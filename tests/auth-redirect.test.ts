@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { annualCheckoutHref, roleHome, safeSchoolRedirect, schoolAccountDestination, schoolEnrollmentHref, whatsappAddonCheckoutHref } from "../src/lib/auth-redirect";
+import { annualCheckoutHref, roleHome, safeSchoolRedirect, safeStudentRedirect, schoolAccountDestination, schoolEnrollmentHref, whatsappAddonCheckoutHref } from "../src/lib/auth-redirect";
 
 describe("school authentication return destinations", () => {
   it.each([
@@ -70,8 +70,15 @@ describe("role portal destinations", () => {
     ["SCHOOL_ADMIN", "/dashboard"],
     ["TEACHER", "/teacher"],
     ["PARENT", "/parent"],
+    ["STUDENT", "/student"],
     ["ACCOUNTANT", "/dashboard"],
   ])("routes %s to %s", (role, destination) => {
     expect(roleHome(role)).toBe(destination);
+  });
+
+  it("accepts only student-portal return destinations", () => {
+    expect(safeStudentRedirect("/student/results?year=2026")).toBe("/student/results?year=2026");
+    expect(safeStudentRedirect("/dashboard/students")).toBe("/student");
+    expect(safeStudentRedirect("//evil.example/student")).toBe("/student");
   });
 });

@@ -25,11 +25,11 @@ import { verifyRazorpaySignature } from "../src/lib/payment";
 import { STARTER_ANNUAL_PRICE, STARTER_PLAN_ID } from "../src/lib/subscription-plans";
 
 describe("database auth flow", () => {
-  it("creates a school admin account with SQLite bindings", async () => {
-    const email = `sqlite-auth-${Date.now()}@example.com`;
+  it("creates a school admin account using PostgreSQL", async () => {
+    const email = `postgres-auth-${Date.now()}@example.test`;
     const passwordHash = await hash("password123", 12);
     const user = await createAccount({
-      name: "SQLite Test User",
+      name: "PostgreSQL Test User",
       email,
       institution: "Test Institution",
       passwordHash,

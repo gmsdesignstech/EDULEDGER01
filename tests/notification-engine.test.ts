@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { hash } from "bcryptjs";
 import {
-  acknowledgeNotificationDelivery,
   activateParentAccount,
   addStudent,
   createAccount,
@@ -220,7 +219,7 @@ describe("EduLedger Notification Engine", () => {
     expect(resPushDisabled.pushSentCount).toBe(0);
   });
 
-  it("strictly enforces delivery invariant: SENT until receipt acknowledgment confirms DELIVERED", async () => {
+  it("records an FCM failure when provider credentials are missing", async () => {
     const stamp = `${Date.now()}_ack`;
     const admin = await createAccount({
       name: "Delivery Admin",
@@ -245,35 +244,20 @@ describe("EduLedger Notification Engine", () => {
     });
 
     expect(result.skipped).toBe(false);
-    expect(result.pushSentCount).toBe(1);
+    expect(result.pushSentCount).toBe(0);
+    expect(result.pushPendingCount).toBe(0);
 
-    // Verify in database: delivery state is SENT (never DELIVERED initially)
+    // The in-app notification remains available even though push is not configured.
     const inbox = await listUserNotifications(admin.id);
     expect(inbox.items.length).toBeGreaterThan(0);
-    const notification = inbox.items[0];
-    expect(notification.deliveryStatus).toBe("SENT");
 
-    // Retrieve the delivery record ID from notification_deliveries
+    // A missing provider must be recorded as failed, never as provider-accepted.
     const deliveries = await getUserNotificationDeliveries(admin.id);
     const fcmDelivery = deliveries.find((d) => d.channel === "FCM");
 
     expect(fcmDelivery).toBeDefined();
-    expect(fcmDelivery!.status).toBe("SENT");
+    expect(fcmDelivery!.status).toBe("FAILED");
     expect(fcmDelivery!.deliveredAt).toBeNull();
-
-    // Client / service worker confirms receipt via deliveryId
-    const ackSuccess = await acknowledgeNotificationDelivery(fcmDelivery!.id);
-    expect(ackSuccess).toBe(true);
-
-    // Verify delivery status transitioned to DELIVERED with delivered_at timestamp
-    const updatedDeliveries = await getUserNotificationDeliveries(admin.id);
-    const updatedFcm = updatedDeliveries.find((d) => d.id === fcmDelivery!.id);
-    expect(updatedFcm?.status).toBe("DELIVERED");
-    expect(updatedFcm?.deliveredAt).not.toBeNull();
-
-    // Verify in-app notification also shows DELIVERED
-    const updatedInbox = await listUserNotifications(admin.id);
-    expect(updatedInbox.items[0].deliveryStatus).toBe("DELIVERED");
   });
 
   it("automatically revokes device token when FCM indicates token is unregistered", async () => {

@@ -1,18 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { ApiResponseError, parseApiResponse } from "../src/lib/api-response";
+import { readApiJson, ApiResponseError } from "@/lib/api-response";
 
-describe("API response parsing", () => {
-  it("parses JSON success responses", async () => {
-    await expect(parseApiResponse<{ ok: boolean }>(Response.json({ ok: true }))).resolves.toEqual({ ok: true });
+describe("readApiJson", () => {
+  it("accepts successful no-content responses", async () => {
+    await expect(readApiJson(new Response(null, { status: 204 }))).resolves.toEqual({});
   });
 
-  it("uses structured API errors", async () => {
-    await expect(parseApiResponse(Response.json({ message: "Validation failed" }, { status: 400 }))).rejects.toMatchObject({ message: "Validation failed", status: 400 });
+  it("returns a useful error for an empty failed response", async () => {
+    await expect(readApiJson(new Response(null, { status: 502 }))).resolves.toEqual({
+      error: "The request failed (502).",
+    });
   });
 
-  it("hides non-JSON server and empty success responses", async () => {
-    await expect(parseApiResponse(new Response("An error occurred", { status: 500 }), "Import failed.")).rejects.toEqual(new ApiResponseError("Import failed.", 500));
-    await expect(parseApiResponse(new Response(null, { status: 204 }))).rejects.toMatchObject({ message: "The server returned an empty response. Please try again." });
-    await expect(parseApiResponse(new Response("<html>upstream error</html>", { status: 200 }))).rejects.toMatchObject({ message: "The server returned an invalid response. Please try again." });
+  it("does not expose the browser JSON parser error for an invalid success response", async () => {
+    await expect(readApiJson(new Response("", { status: 200 }))).rejects.toMatchObject({
+      name: "ApiResponseError",
+      message: "The server returned an empty response. Please try again.",
+    } satisfies Partial<ApiResponseError>);
+    await expect(readApiJson(new Response("<html>gateway error</html>", { status: 200 }))).rejects.toMatchObject({
+      name: "ApiResponseError",
+      message: "The server returned an invalid response. Please try again.",
+    } satisfies Partial<ApiResponseError>);
   });
 });

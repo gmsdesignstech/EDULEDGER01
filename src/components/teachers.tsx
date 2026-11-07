@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiJson } from "@/lib/api-response";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, Eye, Loader2, Pencil, Plus, Search, X } from "lucide-react";
 import { DataActions } from "./data-actions";
@@ -53,7 +54,7 @@ export function Teachers() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const result = await response.json();
+      const result = await readApiJson(response);
       if (!response.ok) throw new Error(result.error || "Could not save the teacher.");
       setOpen(false);
       setEdit(null);

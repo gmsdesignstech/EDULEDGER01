@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiJson } from "@/lib/api-response";
 import { useEffect, useState } from "react";
 import {
   Award,
@@ -42,10 +43,10 @@ export default function ParentResultsPage() {
     fetch(`/api/parent/children/${selectedChild.id}/results`)
       .then(async (res) => {
         if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
+          const err = await readApiJson(res).catch(() => ({}));
           throw new Error(err.error || "Failed to load examination results.");
         }
-        return res.json();
+        return readApiJson(res);
       })
       .then((data) => {
         if (active) setResults(data.results || []);

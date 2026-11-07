@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { hash } from "bcryptjs";
-import { addTimetableEntry, applyWeeklyTimetable, createAccount, getClassWorkspace, getInstitution, getTimetableSettings, listClassSummaries, listTimetableEntries, previewWeeklyTimetable, saveTeacher, saveTimetableSettings } from "../src/lib/db";
+import { addTimetableEntry, applyWeeklyTimetable, createAccount, getClassWorkspace, getInstitution, getTimetableSettings, listClassSummaries, listTimetableEntries, parentChildTimetable, previewWeeklyTimetable, publishTimetable, saveTeacher, saveTimetableSettings, updateTimetableEntry } from "../src/lib/db";
 import { defaultTimetableSettings, timetableSlots, timeMinutes } from "../src/lib/timetable";
 import { configureSchoolCode } from "./configure-school-code";
 
@@ -48,5 +48,19 @@ describe("weekly timetable school timing", () => {
     await addTimetableEntry(admin.institutionId,"Class 1",year,{section:"B",subject:"English",weekday:1,startTime:"09:00",endTime:"09:40"});
     expect((await listTimetableEntries(admin.institutionId,"Class 1","A",year)).map(x=>x.subject)).toEqual(["Mathematics"]);
     expect((await listTimetableEntries(admin.institutionId,"Class 1","B",year)).map(x=>x.subject)).toEqual(["English"]);
+  });
+
+  it("keeps draft edits out of parent views until timetable publication", async()=>{
+    const stamp=Date.now(),admin=await createAccount({name:"Publish Admin",email:`publish-${stamp}@example.com`,institution:`Publish School ${stamp}`,passwordHash:await hash("password123",4)});
+    await configureSchoolCode(admin.institutionId,admin.id);const year=(await getInstitution(admin.institutionId)).academicYear;await listClassSummaries(admin.institutionId,year);
+    const teacher=await saveTeacher(admin.institutionId,{name:"Published Maths Teacher",employeeId:`PUB-${stamp}`,email:"",phone:"9876543210",department:"Teaching",subject:"Mathematics",classes:"Class 1",joiningDate:"2026-04-01",salary:30000,status:"Active"},admin.id);
+    await addTimetableEntry(admin.institutionId,"Class 1",year,{section:"A",subject:"Mathematics",teacherId:teacher.id,weekday:1,startTime:"09:00",endTime:"09:40"});
+    const entry=(await listTimetableEntries(admin.institutionId,"Class 1","A",year))[0];
+    await updateTimetableEntry(admin.institutionId,admin.id,entry.id,{className:"Class 1",section:"A",academicYear:year,subject:"Mathematics",teacherId:teacher.id,weekday:1,startTime:"09:10",endTime:"09:50"});
+    expect((await parentChildTimetable(admin.institutionId,"Class 1","A",year))).toHaveLength(0);
+    expect((await listTimetableEntries(admin.institutionId,"Class 1","A",year))[0].status).toBe("Draft");
+    await publishTimetable(admin.institutionId,admin.id,"Class 1","A",year);
+    expect((await parentChildTimetable(admin.institutionId,"Class 1","A",year)).map(item=>item.startTime)).toEqual(["09:10"]);
+    expect((await listTimetableEntries(admin.institutionId,"Class 1","A",year))[0].status).toBe("Published");
   });
 });

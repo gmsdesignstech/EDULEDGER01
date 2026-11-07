@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiJson } from "@/lib/api-response";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
@@ -21,6 +22,7 @@ import {
   UserCheck,
 } from "lucide-react";
 import { useParentContext } from "@/components/parent-context";
+import { StudentPhotoImage } from "@/components/student-photo-image";
 
 type OverviewData = {
   child: {
@@ -103,10 +105,10 @@ export default function ParentDashboardPage() {
     fetch(`/api/parent/children/${selectedChild.id}/overview`)
       .then(async (res) => {
         if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
+          const err = await readApiJson(res).catch(() => ({}));
           throw new Error(err.error || "Failed to load child overview.");
         }
-        return res.json();
+        return readApiJson(res);
       })
       .then((json) => {
         if (active && json.overview) {
@@ -189,7 +191,9 @@ export default function ParentDashboardPage() {
       {/* Welcome Banner */}
       <div className="relative overflow-hidden rounded-3xl border bg-gradient-to-r from-blue-900 via-indigo-900 to-slate-900 p-6 sm:p-8 text-white shadow-md">
         <div className="relative z-10 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="space-y-1">
+          <div className="flex items-center gap-4 space-y-1">
+            <StudentPhotoImage studentId={data.child.id} name={data.child.name} size={64} className="rounded-2xl border border-white/20 object-cover" />
+            <div className="space-y-1">
             <div className="flex items-center gap-2">
               <span className="rounded-full bg-blue-500/30 px-2.5 py-0.5 text-[11px] font-bold text-blue-200">
                 Class {data.child.className} - {data.child.section}
@@ -203,6 +207,7 @@ export default function ParentDashboardPage() {
             <p className="text-xs text-slate-300 sm:text-sm">
               Academic Year {data.child.academicYear} • Overview & Updates
             </p>
+            </div>
           </div>
 
           {/* Child Switcher Pills if parent has multiple children */}

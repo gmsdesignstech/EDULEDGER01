@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiJson } from "@/lib/api-response";
 import { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
@@ -45,10 +46,10 @@ export default function TeacherStudentsPage() {
     fetch("/api/teacher/students")
       .then(async (res) => {
         if (!res.ok) {
-          const err = await res.json().catch(() => null);
+          const err = await readApiJson(res).catch(() => null);
           throw new Error(err?.error || "Could not load students");
         }
-        return res.json();
+        return readApiJson(res);
       })
       .then((data) => {
         setStudents(data.students || []);

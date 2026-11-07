@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiJson } from "@/lib/api-response";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Download, Loader2, Plus, Settings2, X } from "lucide-react";
 import { staffAttendanceStatuses, type StaffAttendanceStatus } from "@/lib/staff-time";
@@ -38,7 +39,7 @@ export function StaffAttendancePage() {
     setBusy(true); setError("");
     try {
       const response = await fetch(`/api/staff-attendance?date=${encodeURIComponent(date)}&month=${encodeURIComponent(month)}`, { cache: "no-store" });
-      const body = await response.json();
+      const body = await readApiJson(response);
       if (!response.ok) throw new Error(body.error || "Could not load attendance.");
       setData(body); setSettingsDraft(body.settings);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not load attendance."); }
@@ -62,7 +63,7 @@ export function StaffAttendancePage() {
     setSaving(true); setError("");
     try {
       const response = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
-      const result = response.status === 204 ? {} : await response.json(); if (!response.ok) throw new Error(result.error || "Request failed.");
+      const result = response.status === 204 ? {} : await readApiJson(response); if (!response.ok) throw new Error(result.error || "Request failed.");
       await load(); return true;
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Request failed."); return false; }
     finally { setSaving(false); }

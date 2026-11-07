@@ -1,1 +1,64 @@
-{"name":"eduledger","version":"1.0.0","private":true,"packageManager":"npm@11.12.1","engines":{"node":">=22.13 <25","npm":">=10 <12"},"allowScripts":{"unrs-resolver@1.12.2":true},"scripts":{"dev":"node scripts/dev.mjs","dev:next":"next dev","build":"next build","start":"next start","lint":"eslint . --max-warnings=0","typecheck":"tsc --noEmit","test":"vitest run","db:migrate:registration":"node scripts/migrate-registration.mjs","db:migrate:fixed-starter-pricing":"node scripts/migrate-fixed-starter-pricing.mjs"},"dependencies":{"bcryptjs":"^2.4.3","clsx":"^2.1.1","exceljs":"^4.4.0","framer-motion":"^11.15.0","lucide-react":"^0.468.0","next":"16.3.5","next-themes":"^0.4.4","pdf-lib":"^1.17.1","postgres":"^3.4.9","react":"^19.0.0","react-dom":"^19.0.0","recharts":"^3.10.1","server-only":"^0.0.1","swr":"^2.5.1","tailwind-merge":"^2.6.0","xlsx":"https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz","zod":"^3.24.1"},"devDependencies":{"@types/bcryptjs":"^2.4.6","@types/node":"^22.10.2","@types/react":"^19.0.3","@types/react-dom":"^19.0.2","autoprefixer":"^10.4.20","eslint":"9.39.5","eslint-config-next":"^16.3.5","pg-embedded":"^0.2.3","postcss":"^8.4.49","tailwindcss":"^3.4.17","typescript":"^5.7.2","vitest":"^4.1.11"}}
+{
+  "name": "eduledger",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "npm@11.12.1",
+  "engines": {
+    "node": ">=22.13 <25",
+    "npm": ">=10 <12"
+  },
+  "allowScripts": {
+    "unrs-resolver@1.12.2": true
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:next": "node scripts/dev.mjs",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "db:migrate:registration": "node scripts/migrate-registration.mjs",
+    "db:migrate:fixed-starter-pricing": "node scripts/migrate-fixed-starter-pricing.mjs",
+    "db:migrate:student-photo-timetable": "node scripts/migrate-student-photo-timetable.mjs"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "clsx": "^2.1.1",
+    "exceljs": "^4.4.0",
+    "framer-motion": "^11.15.0",
+    "lucide-react": "^0.468.0",
+    "next": "16.4.5",
+    "pdf-lib": "^1.17.1",
+    "postgres": "^3.4.9",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "recharts": "^3.10.1",
+    "server-only": "^0.0.1",
+    "swr": "^2.5.1",
+    "tailwind-merge": "^2.6.0",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.0.3",
+    "@types/react-dom": "^19.0.2",
+    "autoprefixer": "^10.4.20",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.4.5",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "11.0.4"
+    },
+    "exceljs": {
+      "uuid": "11.1.1"
+    }
+  }
+}

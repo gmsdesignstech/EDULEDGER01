@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiJson } from "@/lib/api-response";
 import React, { createContext, useContext, useEffect, useState, useTransition } from "react";
 import type { DbParentChild } from "@/lib/db";
 
@@ -37,7 +38,7 @@ export function ParentProvider({
     try {
       const res = await fetch("/api/parent/children");
       if (res.ok) {
-        const data = await res.json();
+        const data = await readApiJson(res);
         if (Array.isArray(data.children)) {
           setChildrenList(data.children);
           if (!data.children.some((c: DbParentChild) => c.id === selectedChildId)) {

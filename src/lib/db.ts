@@ -1,8 +1,6 @@
 import "server-only";
 import postgres from "postgres";
-import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { assertRuntimePostgresTarget } from "./postgres-target";
 import { createHash, randomUUID } from "node:crypto";
 import { admissionYear, formatRollNumber, isValidStudentId, normalizeSchoolCode, parseStudentId } from "./roll-number";
 import { parseTeacherClasses, serializeTeacherClasses } from "./teacher-classes";
@@ -16,6 +14,7 @@ import {buildAudiencePreview,messageCategory,whatsappTemplateVariablesSafe,type 
 import {authorizeWhatsAppDispatch,type WhatsAppDispatchAuthorizationSnapshot} from "./whatsapp-dispatch-policy";
 import {evaluateWhatsAppDispatchRateLimit} from "./whatsapp-rate-limit";
 import { WHATSAPP_ADDON_ANNUAL_PRICE_PER_STUDENT, whatsappAddonQuote } from "./whatsapp-pricing";
+import { calculatePayrollAmounts } from "./payroll-calculations";
 import { getSiteOrigin } from "./site-url";
 import { normalizeEligibleStudentCount } from "./student-eligibility";
 import { subscriptionCapacityQuote } from "./subscription-change";
@@ -41,6 +40,7 @@ export type DbStudent = {
   name: string;
   admission: string;
   gender: string;
+  photoPath: string;
   bloodGroup: string;
   motherName: string;
   specialQuota: string;
@@ -199,88 +199,17 @@ type ModuleRecord = { id: string; [key: string]: string };
 
 type QueryResult = Record<string, unknown>[] & { count?: number };
 type Sql = {
-  dialect: "postgres" | "sqlite";
   unsafe(query: string, args?: unknown[]): Promise<QueryResult>;
   begin<T>(callback: (sql: Sql) => Promise<T>): Promise<T>;
 };
 
 let client: Sql | undefined, initializing: Promise<void> | undefined;
 
-function sqliteQuery(query: string) {
-  return query
-    .replace(/\bILIKE\b/gi, "LIKE")
-    .replace(/::(?:text|int|jsonb)\b/gi, "")
-    .replace(/\s+FOR UPDATE\b/gi, "")
-    .replace(/\bCURRENT_DATE\b/gi, "date('now')");
-}
-
-function sqliteConnection(): Sql {
-  const path =
-    process.env.SQLITE_DATABASE_PATH ||
-    join(process.cwd(), "data", "eduledger.db");
-  mkdirSync(dirname(path), { recursive: true });
-  const database = new DatabaseSync(path);
-  database.exec(
-    "PRAGMA busy_timeout=30000; PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;",
-  );
-  let transactionQueue: Promise<void> = Promise.resolve();
-
-  const adapter: Sql = {
-    dialect: "sqlite",
-    async unsafe(query, args = []) {
-      const sql = sqliteQuery(query);
-      const normalizedArgs = args.map((value) => {
-        if (value === undefined) return null;
-        if (value instanceof Date) return value.toISOString();
-        if (typeof value === "boolean") return Number(value);
-        if (typeof value === "bigint") return Number(value);
-        return value;
-      });
-      if (!args.length && sql.includes(";")) {
-        database.exec(sql);
-        return [] as QueryResult;
-      }
-      const statement = database.prepare(sql);
-      if (
-        /^\s*(?:SELECT|WITH|PRAGMA)\b/i.test(sql) ||
-        /\bRETURNING\b/i.test(sql)
-      )
-        return statement.all(...(normalizedArgs as never[])) as QueryResult;
-      const result = statement.run(...(normalizedArgs as never[]));
-      const rows = [] as QueryResult;
-      rows.count = Number(result.changes);
-      return rows;
-    },
-    async begin<T>(callback: (sql: Sql) => Promise<T>) {
-      const previous = transactionQueue;
-      let release!: () => void;
-      transactionQueue = new Promise<void>(resolve => { release = resolve; });
-      await previous;
-      try {
-        database.exec("BEGIN IMMEDIATE");
-        const result = await callback(adapter);
-        database.exec("COMMIT");
-        return result;
-      } catch (error) {
-        database.exec("ROLLBACK");
-        throw error;
-      } finally {
-        release();
-      }
-    },
-  };
-  return adapter;
-}
-
 function connection() {
+  assertRuntimePostgresTarget();
   const url = process.env.DATABASE_URL;
-  if (!url) {
-    if (process.env.NODE_ENV === "production" && !process.env.SQLITE_DATABASE_PATH)
-      throw new Error(
-        "No PostgreSQL connection URL is configured. Set DATABASE_URL to the pooled PostgreSQL URL supplied by your database provider.",
-      );
-    return (client ??= sqliteConnection());
-  }
+  if (!url)
+    throw new Error("No PostgreSQL connection URL is configured. Set DATABASE_URL to the approved PostgreSQL target.");
   if (!/^postgres(?:ql)?:\/\//i.test(url))
     throw new Error(
       "DATABASE_URL must be a postgres:// or postgresql:// TCP connection URL. This application cannot use a prisma+postgres:// Accelerate URL with postgres.js.",
@@ -297,13 +226,11 @@ function connection() {
     ssl: process.env.NODE_ENV === "production" ? "require" : undefined,
   });
   const adapter: Sql = {
-    dialect: "postgres",
     unsafe: (query, args = []) =>
       sql.unsafe(query, args as never[]) as unknown as Promise<QueryResult>,
     async begin<T>(callback: (sql: Sql) => Promise<T>) {
       const result = await sql.begin((transaction) => {
         const transactionAdapter: Sql = {
-          dialect: "postgres",
           unsafe: (query, args = []) =>
             transaction.unsafe(query, args as never[]) as unknown as Promise<QueryResult>,
           begin: async () => {
@@ -319,7 +246,6 @@ function connection() {
   return adapter;
 }
 function bind(query: string, sql: Sql) {
-  if (sql.dialect === "sqlite") return sqliteQuery(query);
   let n = 0;
   return query.replace(/\?/g, () => `$${++n}`);
 }
@@ -348,12 +274,16 @@ async function run(
 async function initialize() {
   if (initializing) return initializing;
   initializing = (async () => {
+    if (process.env.EDULEDGER_ENVIRONMENT === "development" && process.env.EDULEDGER_ALLOW_SCHEMA_INITIALIZATION !== "1")
+      throw new Error("Development schema initialization is disabled until the database schema is owner-verified.");
+    if (process.env.EDULEDGER_ENVIRONMENT === "test" && process.env.TEST_DATABASE_ALLOW_SCHEMA_INIT !== "1")
+      throw new Error("Test schema initialization requires explicit authorization for the isolated test target.");
     const sql = connection();
     await sql.unsafe(`
 CREATE TABLE IF NOT EXISTS institutions(id TEXT PRIMARY KEY,name TEXT NOT NULL,planned_student_count INTEGER NOT NULL DEFAULT 0,subscription_start_date TIMESTAMPTZ,subscription_end_date TIMESTAMPTZ,created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,email TEXT NOT NULL UNIQUE,name TEXT NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL,institution_id TEXT NOT NULL REFERENCES institutions(id),created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,expires_at TIMESTAMPTZ NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS students(id TEXT PRIMARY KEY,institution_id TEXT NOT NULL REFERENCES institutions(id),name TEXT NOT NULL,admission TEXT NOT NULL,gender TEXT NOT NULL DEFAULT '',date_of_birth TEXT NOT NULL DEFAULT '',class_name TEXT NOT NULL DEFAULT '',section TEXT NOT NULL DEFAULT '',grade TEXT NOT NULL,parent TEXT NOT NULL,roll_number TEXT NOT NULL DEFAULT '',parent_phone TEXT NOT NULL DEFAULT '',parent_email TEXT NOT NULL DEFAULT '',address TEXT NOT NULL DEFAULT '',admission_date TEXT NOT NULL DEFAULT '',attendance INTEGER NOT NULL DEFAULT 100,fee TEXT NOT NULL DEFAULT 'Pending',total_fee DOUBLE PRECISION NOT NULL DEFAULT 0,paid_fee DOUBLE PRECISION NOT NULL DEFAULT 0,pending_fee DOUBLE PRECISION NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'Active',created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(institution_id,admission));
+CREATE TABLE IF NOT EXISTS students(id TEXT PRIMARY KEY,institution_id TEXT NOT NULL REFERENCES institutions(id),name TEXT NOT NULL,admission TEXT NOT NULL,gender TEXT NOT NULL DEFAULT '',photo_path TEXT,date_of_birth TEXT NOT NULL DEFAULT '',class_name TEXT NOT NULL DEFAULT '',section TEXT NOT NULL DEFAULT '',grade TEXT NOT NULL,parent TEXT NOT NULL,roll_number TEXT NOT NULL DEFAULT '',parent_phone TEXT NOT NULL DEFAULT '',parent_email TEXT NOT NULL DEFAULT '',address TEXT NOT NULL DEFAULT '',admission_date TEXT NOT NULL DEFAULT '',attendance INTEGER NOT NULL DEFAULT 100,fee TEXT NOT NULL DEFAULT 'Pending',total_fee DOUBLE PRECISION NOT NULL DEFAULT 0,paid_fee DOUBLE PRECISION NOT NULL DEFAULT 0,pending_fee DOUBLE PRECISION NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'Active',created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(institution_id,admission));
 CREATE TABLE IF NOT EXISTS module_records(id TEXT PRIMARY KEY,institution_id TEXT NOT NULL,module TEXT NOT NULL,data JSONB NOT NULL DEFAULT '{}'::jsonb,created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS teachers(id TEXT PRIMARY KEY,institution_id TEXT NOT NULL REFERENCES institutions(id),name TEXT NOT NULL,employee_id TEXT NOT NULL,email TEXT NOT NULL DEFAULT '',phone TEXT NOT NULL DEFAULT '',department TEXT NOT NULL DEFAULT '',subject TEXT NOT NULL DEFAULT '',assigned_classes TEXT NOT NULL DEFAULT '',joining_date TEXT NOT NULL,salary DOUBLE PRECISION NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'Active',created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(institution_id,employee_id));
 CREATE TABLE IF NOT EXISTS classes(id TEXT PRIMARY KEY,institution_id TEXT NOT NULL REFERENCES institutions(id),name TEXT NOT NULL,section TEXT NOT NULL,teacher TEXT NOT NULL DEFAULT '',academic_year TEXT NOT NULL,capacity INTEGER NOT NULL DEFAULT 40,status TEXT NOT NULL DEFAULT 'Active',created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(institution_id,name,section,academic_year));
@@ -375,7 +305,7 @@ CREATE TABLE IF NOT EXISTS settings(institution_id TEXT PRIMARY KEY REFERENCES i
 CREATE TABLE IF NOT EXISTS academic_years(id TEXT PRIMARY KEY,institution_id TEXT NOT NULL REFERENCES institutions(id),name TEXT NOT NULL,start_month INTEGER NOT NULL DEFAULT 4 CHECK(start_month BETWEEN 1 AND 12),end_month INTEGER NOT NULL DEFAULT 3 CHECK(end_month BETWEEN 1 AND 12),status TEXT NOT NULL DEFAULT 'Active' CHECK(status IN ('Active','Archived')),is_active BOOLEAN NOT NULL DEFAULT FALSE,created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(institution_id,name));
 CREATE TABLE IF NOT EXISTS institution_classes(id TEXT PRIMARY KEY,institution_id TEXT NOT NULL REFERENCES institutions(id),name TEXT NOT NULL,sort_order INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'Active' CHECK(status IN ('Active','Inactive')),created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(institution_id,name));
 CREATE TABLE IF NOT EXISTS institution_sections(id TEXT PRIMARY KEY,institution_id TEXT NOT NULL REFERENCES institutions(id),class_id TEXT NOT NULL REFERENCES institution_classes(id) ON DELETE RESTRICT,name TEXT NOT NULL,sort_order INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'Active' CHECK(status IN ('Active','Inactive')),created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(class_id,name));
-CREATE TABLE IF NOT EXISTS school_assets(id TEXT PRIMARY KEY,institution_id TEXT NOT NULL REFERENCES institutions(id),kind TEXT NOT NULL CHECK(kind IN ('logo','signature')),mime_type TEXT NOT NULL,data BYTEA NOT NULL,size_bytes INTEGER NOT NULL,updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(institution_id,kind));
+CREATE TABLE IF NOT EXISTS school_assets(id TEXT PRIMARY KEY,institution_id TEXT NOT NULL REFERENCES institutions(id),kind TEXT NOT NULL CHECK(kind IN ('logo','signature','payment-qr') OR kind LIKE 'student-photo:%' OR kind LIKE 'payment-screenshot:%'),mime_type TEXT NOT NULL,data BYTEA NOT NULL,size_bytes INTEGER NOT NULL,updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(institution_id,kind));
 CREATE TABLE IF NOT EXISTS student_enrollments(id TEXT PRIMARY KEY,institution_id TEXT NOT NULL REFERENCES institutions(id),student_id TEXT NOT NULL REFERENCES students(id) ON DELETE RESTRICT,academic_year TEXT NOT NULL,class_name TEXT NOT NULL,section TEXT NOT NULL DEFAULT '',status TEXT NOT NULL DEFAULT 'Active',promoted_from_enrollment_id TEXT REFERENCES student_enrollments(id) ON DELETE SET NULL,promoted_at TIMESTAMPTZ,promoted_by TEXT REFERENCES users(id) ON DELETE SET NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(institution_id,student_id,academic_year));
 CREATE TABLE IF NOT EXISTS promotion_batches(id TEXT PRIMARY KEY,institution_id TEXT NOT NULL REFERENCES institutions(id),source_academic_year TEXT NOT NULL,target_academic_year TEXT NOT NULL,source_class TEXT NOT NULL,source_section TEXT NOT NULL DEFAULT '',target_class TEXT NOT NULL,target_section TEXT NOT NULL DEFAULT '',promoted_by TEXT NOT NULL REFERENCES users(id),promoted_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,status TEXT NOT NULL DEFAULT 'Completed',correction_reason TEXT);
 CREATE TABLE IF NOT EXISTS promotion_items(id TEXT PRIMARY KEY,batch_id TEXT NOT NULL REFERENCES promotion_batches(id) ON DELETE RESTRICT,institution_id TEXT NOT NULL REFERENCES institutions(id),student_id TEXT NOT NULL REFERENCES students(id) ON DELETE RESTRICT,source_enrollment_id TEXT NOT NULL REFERENCES student_enrollments(id),target_enrollment_id TEXT NOT NULL REFERENCES student_enrollments(id),status TEXT NOT NULL DEFAULT 'Promoted',error_message TEXT NOT NULL DEFAULT '',created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(institution_id,student_id,target_enrollment_id));
@@ -389,7 +319,8 @@ CREATE TABLE IF NOT EXISTS subscription_adjustments(id TEXT PRIMARY KEY,institut
 CREATE TABLE IF NOT EXISTS razorpay_webhook_events(id TEXT PRIMARY KEY,event_type TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS subscription_notification_events(id TEXT PRIMARY KEY,subscription_id TEXT NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,institution_id TEXT NOT NULL REFERENCES institutions(id),milestone TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'SENT',attempts INTEGER NOT NULL DEFAULT 1,last_error TEXT NOT NULL DEFAULT '',sent_at TIMESTAMPTZ,created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(subscription_id,milestone));
 CREATE TABLE IF NOT EXISTS subscription_processing_logs(id TEXT PRIMARY KEY,started_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,finished_at TIMESTAMPTZ,status TEXT NOT NULL,checked_count INTEGER NOT NULL DEFAULT 0,expired_count INTEGER NOT NULL DEFAULT 0,notification_count INTEGER NOT NULL DEFAULT 0,error TEXT NOT NULL DEFAULT '');
-CREATE TABLE IF NOT EXISTS timetable_entries(id TEXT PRIMARY KEY,institution_id TEXT NOT NULL REFERENCES institutions(id),class_name TEXT NOT NULL,section TEXT NOT NULL,academic_year TEXT NOT NULL,subject TEXT NOT NULL,teacher_id TEXT REFERENCES teachers(id) ON DELETE SET NULL,weekday INTEGER NOT NULL CHECK(weekday BETWEEN 1 AND 6),start_time TEXT NOT NULL,end_time TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(institution_id,class_name,section,academic_year,weekday,start_time));
+CREATE TABLE IF NOT EXISTS timetable_entries(id TEXT PRIMARY KEY,institution_id TEXT NOT NULL REFERENCES institutions(id),class_name TEXT NOT NULL,section TEXT NOT NULL,academic_year TEXT NOT NULL,subject TEXT NOT NULL,teacher_id TEXT REFERENCES teachers(id) ON DELETE SET NULL,weekday INTEGER NOT NULL CHECK(weekday BETWEEN 1 AND 6),start_time TEXT NOT NULL,end_time TEXT NOT NULL,generated BOOLEAN NOT NULL DEFAULT FALSE,status TEXT NOT NULL DEFAULT 'Published' CHECK(status IN ('Draft','Published','Archived')),created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_timetable_active_slot ON timetable_entries(institution_id,class_name,section,academic_year,weekday,start_time) WHERE status<>'Archived';
 CREATE TABLE IF NOT EXISTS class_exams(id TEXT PRIMARY KEY,institution_id TEXT NOT NULL REFERENCES institutions(id),class_name TEXT NOT NULL,section TEXT NOT NULL,academic_year TEXT NOT NULL,name TEXT NOT NULL,exam_date TEXT NOT NULL,subject TEXT NOT NULL,max_marks DOUBLE PRECISION NOT NULL,passing_marks DOUBLE PRECISION NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS class_results(id TEXT PRIMARY KEY,institution_id TEXT NOT NULL REFERENCES institutions(id),exam_id TEXT NOT NULL REFERENCES class_exams(id) ON DELETE CASCADE,student_id TEXT NOT NULL REFERENCES students(id) ON DELETE CASCADE,marks DOUBLE PRECISION NOT NULL,grade TEXT NOT NULL,status TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(exam_id,student_id));
 CREATE TABLE IF NOT EXISTS account_transactions(id TEXT PRIMARY KEY,institution_id TEXT NOT NULL REFERENCES institutions(id),academic_year TEXT NOT NULL,transaction_type TEXT NOT NULL CHECK(transaction_type IN ('income','expense')),category TEXT NOT NULL,amount_paise INTEGER NOT NULL CHECK(amount_paise>0),transaction_date TEXT NOT NULL,description TEXT NOT NULL,payment_method TEXT NOT NULL,reference_number TEXT NOT NULL DEFAULT '',source_type TEXT NOT NULL DEFAULT 'cash_book',source_id TEXT,status TEXT NOT NULL DEFAULT 'Active' CHECK(status IN ('Active','Voided')),notes TEXT NOT NULL DEFAULT '',created_by TEXT NOT NULL REFERENCES users(id),created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);
@@ -447,42 +378,36 @@ CREATE INDEX IF NOT EXISTS idx_notif_deliv_user ON notification_deliveries(user_
 CREATE INDEX IF NOT EXISTS idx_notif_deliv_event ON notification_deliveries(event_id);
 `);
     await sql.unsafe(`CREATE TABLE IF NOT EXISTS admin_settings(id TEXT PRIMARY KEY,application_name TEXT NOT NULL DEFAULT 'EduLedger',support_email TEXT NOT NULL DEFAULT '',currency TEXT NOT NULL DEFAULT 'INR',timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata',date_format TEXT NOT NULL DEFAULT 'DD/MM/YYYY',session_timeout_minutes INTEGER NOT NULL DEFAULT 10080,updated_by TEXT,updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);`);
-    const additions={settings:["result_grade_bands TEXT NOT NULL DEFAULT ''","result_overall_pass_percent INTEGER NOT NULL DEFAULT 35","result_require_subject_pass BOOLEAN NOT NULL DEFAULT TRUE","result_ranking_enabled BOOLEAN NOT NULL DEFAULT FALSE","result_principal_remarks TEXT NOT NULL DEFAULT ''","result_class_teacher_remarks TEXT NOT NULL DEFAULT ''","result_report_format TEXT NOT NULL DEFAULT 'Standard'","timetable_start_time TEXT NOT NULL DEFAULT '09:00'","timetable_end_time TEXT NOT NULL DEFAULT '16:00'","timetable_period_minutes INTEGER NOT NULL DEFAULT 40","timetable_short_break_minutes INTEGER NOT NULL DEFAULT 15","timetable_lunch_minutes INTEGER NOT NULL DEFAULT 40","timetable_periods_per_day INTEGER NOT NULL DEFAULT 9","timetable_working_days TEXT NOT NULL DEFAULT '1,2,3,4,5'","timetable_timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata'","school_code TEXT NOT NULL DEFAULT ''","dise_code TEXT NOT NULL DEFAULT ''","website TEXT NOT NULL DEFAULT ''","city TEXT NOT NULL DEFAULT ''","state TEXT NOT NULL DEFAULT ''","pin_code TEXT NOT NULL DEFAULT ''","principal_name TEXT NOT NULL DEFAULT ''","registration_number TEXT NOT NULL DEFAULT ''","affiliation TEXT NOT NULL DEFAULT ''","motto TEXT NOT NULL DEFAULT ''","school_type TEXT NOT NULL DEFAULT ''","fee_receipt_title TEXT NOT NULL DEFAULT 'Fee Payment Receipt'","fee_receipt_subheader TEXT NOT NULL DEFAULT 'Standard Fee Receipt Template'","payslip_title TEXT NOT NULL DEFAULT 'Pay Slip'","payslip_subheader TEXT NOT NULL DEFAULT 'Standard Pay Slip Template'","footer_text TEXT NOT NULL DEFAULT ''","signature_label TEXT NOT NULL DEFAULT 'Authorized Signatory'","attendance_correction_window_hours INTEGER NOT NULL DEFAULT 24"],students:["blood_group TEXT","mother_name TEXT","special_quota TEXT","special_quota_description TEXT","academic_year TEXT NOT NULL DEFAULT ''","leaving_date TEXT","leaving_reason TEXT NOT NULL DEFAULT ''","graduation_date TEXT","leaving_remarks TEXT NOT NULL DEFAULT ''"],payments:["payment_frequency TEXT NOT NULL DEFAULT 'Custom'","original_amount DOUBLE PRECISION NOT NULL DEFAULT 0","discount_type TEXT NOT NULL DEFAULT 'Fixed'","discount_value DOUBLE PRECISION NOT NULL DEFAULT 0","discount_amount DOUBLE PRECISION NOT NULL DEFAULT 0","discount_reason TEXT NOT NULL DEFAULT ''","late_fee DOUBLE PRECISION NOT NULL DEFAULT 0","net_payable DOUBLE PRECISION NOT NULL DEFAULT 0"],users:["status TEXT NOT NULL DEFAULT 'Active'","last_login_at TIMESTAMPTZ"],institutions:["status TEXT NOT NULL DEFAULT 'Active'"],subscriptions:["payment_status TEXT NOT NULL DEFAULT 'Pending'","plan_type TEXT NOT NULL DEFAULT 'Yearly'","currency TEXT NOT NULL DEFAULT 'INR'","renewal_date TIMESTAMPTZ","auto_renew BOOLEAN NOT NULL DEFAULT FALSE","last_notification_sent TIMESTAMPTZ","grace_period_days INTEGER NOT NULL DEFAULT 0"],notifications:["link TEXT NOT NULL DEFAULT ''","delivery_status TEXT NOT NULL DEFAULT 'SENT'"],admin_settings:["subscription_warning_days TEXT NOT NULL DEFAULT '30,15,7,3,1,0,-1'","subscription_notifications_enabled BOOLEAN NOT NULL DEFAULT TRUE","in_app_notifications_enabled BOOLEAN NOT NULL DEFAULT TRUE","email_notifications_enabled BOOLEAN NOT NULL DEFAULT FALSE","subscription_grace_days INTEGER NOT NULL DEFAULT 0"]} as const;
-    if(sql.dialect==="sqlite"){
-      for(const [table,definitions] of Object.entries(additions)){const columns=new Set((await sql.unsafe(`PRAGMA table_info(${table})`) as unknown as {name:string}[]).map(x=>x.name));for(const definition of definitions)if(!columns.has(definition.split(" ")[0]))await sql.unsafe(`ALTER TABLE ${table} ADD COLUMN ${definition}`)}
-    }else{
+    const additions={settings:["result_grade_bands TEXT NOT NULL DEFAULT ''","result_overall_pass_percent INTEGER NOT NULL DEFAULT 35","result_require_subject_pass BOOLEAN NOT NULL DEFAULT TRUE","result_ranking_enabled BOOLEAN NOT NULL DEFAULT FALSE","result_principal_remarks TEXT NOT NULL DEFAULT ''","result_class_teacher_remarks TEXT NOT NULL DEFAULT ''","result_report_format TEXT NOT NULL DEFAULT 'Standard'","timetable_start_time TEXT NOT NULL DEFAULT '09:00'","timetable_end_time TEXT NOT NULL DEFAULT '16:00'","timetable_period_minutes INTEGER NOT NULL DEFAULT 40","timetable_short_break_minutes INTEGER NOT NULL DEFAULT 15","timetable_lunch_minutes INTEGER NOT NULL DEFAULT 40","timetable_periods_per_day INTEGER NOT NULL DEFAULT 9","timetable_working_days TEXT NOT NULL DEFAULT '1,2,3,4,5'","timetable_timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata'","school_code TEXT NOT NULL DEFAULT ''","dise_code TEXT NOT NULL DEFAULT ''","website TEXT NOT NULL DEFAULT ''","city TEXT NOT NULL DEFAULT ''","state TEXT NOT NULL DEFAULT ''","pin_code TEXT NOT NULL DEFAULT ''","principal_name TEXT NOT NULL DEFAULT ''","registration_number TEXT NOT NULL DEFAULT ''","affiliation TEXT NOT NULL DEFAULT ''","motto TEXT NOT NULL DEFAULT ''","school_type TEXT NOT NULL DEFAULT ''","fee_receipt_title TEXT NOT NULL DEFAULT 'Fee Payment Receipt'","fee_receipt_subheader TEXT NOT NULL DEFAULT 'Standard Fee Receipt Template'","payslip_title TEXT NOT NULL DEFAULT 'Pay Slip'","payslip_subheader TEXT NOT NULL DEFAULT 'Standard Pay Slip Template'","footer_text TEXT NOT NULL DEFAULT ''","signature_label TEXT NOT NULL DEFAULT 'Authorized Signatory'","attendance_correction_window_hours INTEGER NOT NULL DEFAULT 24","upi_enabled BOOLEAN NOT NULL DEFAULT FALSE","upi_id TEXT NOT NULL DEFAULT ''","payee_name TEXT NOT NULL DEFAULT ''","payment_method_name TEXT NOT NULL DEFAULT 'School UPI / QR Code'","bank_name TEXT NOT NULL DEFAULT ''","account_number TEXT NOT NULL DEFAULT ''","ifsc_code TEXT NOT NULL DEFAULT ''","payment_instructions TEXT NOT NULL DEFAULT ''"],students:["blood_group TEXT","mother_name TEXT","special_quota TEXT","special_quota_description TEXT","academic_year TEXT NOT NULL DEFAULT ''","leaving_date TEXT","leaving_reason TEXT NOT NULL DEFAULT ''","graduation_date TEXT","leaving_remarks TEXT NOT NULL DEFAULT ''","photo_path TEXT"],payments:["payment_frequency TEXT NOT NULL DEFAULT 'Custom'","original_amount DOUBLE PRECISION NOT NULL DEFAULT 0","discount_type TEXT NOT NULL DEFAULT 'Fixed'","discount_value DOUBLE PRECISION NOT NULL DEFAULT 0","discount_amount DOUBLE PRECISION NOT NULL DEFAULT 0","discount_reason TEXT NOT NULL DEFAULT ''","late_fee DOUBLE PRECISION NOT NULL DEFAULT 0","net_payable DOUBLE PRECISION NOT NULL DEFAULT 0"],users:["status TEXT NOT NULL DEFAULT 'Active'","last_login_at TIMESTAMPTZ"],institutions:["status TEXT NOT NULL DEFAULT 'Active'"],subscriptions:["payment_status TEXT NOT NULL DEFAULT 'Pending'","plan_type TEXT NOT NULL DEFAULT 'Yearly'","currency TEXT NOT NULL DEFAULT 'INR'","renewal_date TIMESTAMPTZ","auto_renew BOOLEAN NOT NULL DEFAULT FALSE","last_notification_sent TIMESTAMPTZ","grace_period_days INTEGER NOT NULL DEFAULT 0"],notifications:["link TEXT NOT NULL DEFAULT ''","delivery_status TEXT NOT NULL DEFAULT 'SENT'"],admin_settings:["subscription_warning_days TEXT NOT NULL DEFAULT '30,15,7,3,1,0,-1'","subscription_notifications_enabled BOOLEAN NOT NULL DEFAULT TRUE","in_app_notifications_enabled BOOLEAN NOT NULL DEFAULT TRUE","email_notifications_enabled BOOLEAN NOT NULL DEFAULT FALSE","subscription_grace_days INTEGER NOT NULL DEFAULT 0"]} as const;
+
       for(const [table,definitions] of Object.entries(additions))for(const definition of definitions)await sql.unsafe(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${definition}`);
-    }
+
     const fixedPricingAdditions={subscriptions:["student_count_at_purchase INTEGER","pricing_model TEXT NOT NULL DEFAULT 'PER_STUDENT'","plan_version INTEGER NOT NULL DEFAULT 1"],subscription_plans:["pricing_model TEXT NOT NULL DEFAULT 'PER_STUDENT'","plan_version INTEGER NOT NULL DEFAULT 1","effective_at TIMESTAMPTZ","eligible_new_schools BOOLEAN NOT NULL DEFAULT FALSE"],subscription_payments:["student_count_at_purchase INTEGER","pricing_model TEXT NOT NULL DEFAULT 'PER_STUDENT'","plan_version INTEGER NOT NULL DEFAULT 1"]} as const;
-    if(sql.dialect==="sqlite"){
-      for(const [table,definitions] of Object.entries(fixedPricingAdditions)){const columns=new Set((await sql.unsafe(`PRAGMA table_info(${table})`) as unknown as {name:string}[]).map(x=>x.name));for(const definition of definitions)if(!columns.has(definition.split(" ")[0]))await sql.unsafe(`ALTER TABLE ${table} ADD COLUMN ${definition}`)}
-    }else{
+
       for(const [table,definitions] of Object.entries(fixedPricingAdditions))for(const definition of definitions)await sql.unsafe(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${definition}`);
-    }
+
     const whatsappStudentAdditions=["parent_relationship TEXT NOT NULL DEFAULT ''","parent_whatsapp TEXT NOT NULL DEFAULT ''","alternate_whatsapp TEXT NOT NULL DEFAULT ''","whatsapp_enabled BOOLEAN NOT NULL DEFAULT FALSE","whatsapp_attendance BOOLEAN NOT NULL DEFAULT FALSE","whatsapp_academics BOOLEAN NOT NULL DEFAULT FALSE","whatsapp_fees BOOLEAN NOT NULL DEFAULT FALSE","whatsapp_notices BOOLEAN NOT NULL DEFAULT FALSE","whatsapp_general BOOLEAN NOT NULL DEFAULT FALSE","whatsapp_consent_status TEXT NOT NULL DEFAULT 'UNKNOWN'","whatsapp_consent_at TIMESTAMPTZ","whatsapp_consent_source TEXT NOT NULL DEFAULT ''","whatsapp_opted_out_at TIMESTAMPTZ","whatsapp_contact_verified_at TIMESTAMPTZ"];
-    if(sql.dialect==="sqlite"){const columns=new Set((await sql.unsafe("PRAGMA table_info(students)") as unknown as {name:string}[]).map(item=>item.name));for(const definition of whatsappStudentAdditions)if(!columns.has(definition.split(" ")[0]))await sql.unsafe(`ALTER TABLE students ADD COLUMN ${definition}`)}else for(const definition of whatsappStudentAdditions)await sql.unsafe(`ALTER TABLE students ADD COLUMN IF NOT EXISTS ${definition}`);
+    for(const definition of whatsappStudentAdditions)await sql.unsafe(`ALTER TABLE students ADD COLUMN IF NOT EXISTS ${definition}`);
     const templateAdditions=["approval_status TEXT NOT NULL DEFAULT 'UNKNOWN'","provider_category TEXT NOT NULL DEFAULT ''","rejection_reason TEXT NOT NULL DEFAULT ''","provider_updated_at TIMESTAMPTZ","last_synced_at TIMESTAMPTZ"];
-    if(sql.dialect==="sqlite"){const columns=new Set((await sql.unsafe("PRAGMA table_info(whatsapp_templates)") as unknown as {name:string}[]).map(item=>item.name));for(const definition of templateAdditions)if(!columns.has(definition.split(" ")[0]))await sql.unsafe(`ALTER TABLE whatsapp_templates ADD COLUMN ${definition}`)}else for(const definition of templateAdditions)await sql.unsafe(`ALTER TABLE whatsapp_templates ADD COLUMN IF NOT EXISTS ${definition}`);
+    for(const definition of templateAdditions)await sql.unsafe(`ALTER TABLE whatsapp_templates ADD COLUMN IF NOT EXISTS ${definition}`);
     const messageAdditions=["scheduled_at TIMESTAMPTZ","cancelled_at TIMESTAMPTZ","claimed_at TIMESTAMPTZ","lease_owner TEXT","lease_expires_at TIMESTAMPTZ","provider_status_at TIMESTAMPTZ","outcome_class TEXT NOT NULL DEFAULT ''","last_worker_id TEXT NOT NULL DEFAULT ''"];
-    if(sql.dialect==="sqlite"){const columns=new Set((await sql.unsafe("PRAGMA table_info(whatsapp_messages)") as unknown as {name:string}[]).map(item=>item.name));for(const definition of messageAdditions)if(!columns.has(definition.split(" ")[0]))await sql.unsafe(`ALTER TABLE whatsapp_messages ADD COLUMN ${definition}`)}else for(const definition of messageAdditions)await sql.unsafe(`ALTER TABLE whatsapp_messages ADD COLUMN IF NOT EXISTS ${definition}`);
-    if(sql.dialect==="sqlite"){
-      const columns=new Set((await sql.unsafe("PRAGMA table_info(payments)") as unknown as {name:string}[]).map(item=>item.name));
-      if(!columns.has("request_id"))await sql.unsafe("ALTER TABLE payments ADD COLUMN request_id TEXT");
-    }else await sql.unsafe("ALTER TABLE payments ADD COLUMN IF NOT EXISTS request_id TEXT");
+    for(const definition of messageAdditions)await sql.unsafe(`ALTER TABLE whatsapp_messages ADD COLUMN IF NOT EXISTS ${definition}`);
+    await sql.unsafe("ALTER TABLE payments ADD COLUMN IF NOT EXISTS request_id TEXT");
     await sql.unsafe("CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_request_id ON payments(institution_id,request_id) WHERE request_id IS NOT NULL");
-    if(sql.dialect==="sqlite"){
-      const cols=new Set((await sql.unsafe("PRAGMA table_info(timetable_entries)") as unknown as {name:string}[]).map(item=>item.name));
-      if(!cols.has("generated"))await sql.unsafe("ALTER TABLE timetable_entries ADD COLUMN generated BOOLEAN NOT NULL DEFAULT FALSE");
-    }else await sql.unsafe("ALTER TABLE timetable_entries ADD COLUMN IF NOT EXISTS generated BOOLEAN NOT NULL DEFAULT FALSE");
+
+      await sql.unsafe("ALTER TABLE timetable_entries ADD COLUMN IF NOT EXISTS generated BOOLEAN NOT NULL DEFAULT FALSE");
+      await sql.unsafe("ALTER TABLE timetable_entries ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'Published'");
+      await sql.unsafe("ALTER TABLE timetable_entries DROP CONSTRAINT IF EXISTS timetable_entries_institution_id_class_name_section_academic_year_weekday_start_time_key");
+      await sql.unsafe("CREATE UNIQUE INDEX IF NOT EXISTS idx_timetable_active_slot ON timetable_entries(institution_id,class_name,section,academic_year,weekday,start_time) WHERE status<>'Archived'");
+      await sql.unsafe("CREATE INDEX IF NOT EXISTS idx_timetable_published_scope ON timetable_entries(institution_id,academic_year,class_name,section,weekday,start_time) WHERE status='Published'");
+
     await sql.unsafe(`CREATE TABLE IF NOT EXISTS result_examinations(id TEXT PRIMARY KEY,institution_id TEXT NOT NULL REFERENCES institutions(id),name TEXT NOT NULL,academic_year TEXT NOT NULL,class_name TEXT NOT NULL,section TEXT NOT NULL,start_date TEXT NOT NULL,end_date TEXT NOT NULL,publication_date TEXT,status TEXT NOT NULL DEFAULT 'Draft' CHECK(status IN ('Draft','Marks Entry Open','Marks Entry Closed','Results Under Review','Approved','Published','Archived')),created_by TEXT REFERENCES users(id),verified_by TEXT REFERENCES users(id),approved_by TEXT REFERENCES users(id),published_by TEXT REFERENCES users(id),published_at TIMESTAMPTZ,created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(institution_id,academic_year,class_name,section,name));
 CREATE INDEX IF NOT EXISTS idx_result_examinations_scope ON result_examinations(institution_id,academic_year,class_name,section,status);
 CREATE INDEX IF NOT EXISTS idx_result_examinations_publish ON result_examinations(institution_id,status,published_at);`);
     await sql.unsafe(`CREATE TABLE IF NOT EXISTS result_publication_snapshots(id TEXT PRIMARY KEY,institution_id TEXT NOT NULL REFERENCES institutions(id),examination_id TEXT NOT NULL REFERENCES result_examinations(id) ON DELETE RESTRICT,version INTEGER NOT NULL,snapshot JSONB NOT NULL,published_by TEXT NOT NULL REFERENCES users(id),published_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(examination_id,version));
 CREATE INDEX IF NOT EXISTS idx_result_snapshots_scope ON result_publication_snapshots(institution_id,examination_id,version);`);
     const resultAdditions={class_exams:["result_examination_id TEXT REFERENCES result_examinations(id)","max_marks_cent INTEGER","passing_marks_cent INTEGER","required BOOLEAN NOT NULL DEFAULT TRUE"],class_results:["marks_cent INTEGER","mark_status TEXT NOT NULL DEFAULT 'Scored'","remarks TEXT NOT NULL DEFAULT ''","updated_by TEXT REFERENCES users(id)","updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP"]} as const;
-    if(sql.dialect==="sqlite"){
-      for(const [table,definitions] of Object.entries(resultAdditions)){const columns=new Set((await sql.unsafe(`PRAGMA table_info(${table})`) as unknown as {name:string}[]).map(x=>x.name));for(const definition of definitions)if(!columns.has(definition.split(" ")[0]))await sql.unsafe(`ALTER TABLE ${table} ADD COLUMN ${definition}`)}
-    }else for(const [table,definitions] of Object.entries(resultAdditions))for(const definition of definitions)await sql.unsafe(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${definition}`);
+    for(const [table,definitions] of Object.entries(resultAdditions))for(const definition of definitions)await sql.unsafe(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${definition}`);
     await sql.unsafe("CREATE UNIQUE INDEX IF NOT EXISTS idx_class_exam_group_subject ON class_exams(result_examination_id,subject) WHERE result_examination_id IS NOT NULL");
     await sql.unsafe("CREATE INDEX IF NOT EXISTS idx_class_results_exam ON class_results(institution_id,exam_id,student_id)");
     const duplicateRoll=await row<{count:number}>("SELECT COUNT(*)::int count FROM (SELECT 1 FROM students WHERE roll_number<>'' GROUP BY institution_id,roll_number HAVING COUNT(*)>1) duplicates",[],sql);
@@ -497,37 +422,45 @@ CREATE INDEX IF NOT EXISTS idx_staff_attendance_person ON staff_attendance(insti
         [p.id,p.name,p.id==="annual-service"?2147483647:p.studentLimit,p.id==="annual-service"?p.pricePerStudent:p.price,p.billingPeriod,p.active,p.pricingModel,p.version,p.effectiveAt,p.eligibleNewSchools],
         sql,
       );
-    if(sql.dialect==="sqlite"){const columns=new Set((await sql.unsafe("PRAGMA table_info(subscriptions)") as unknown as {name:string}[]).map(item=>item.name));if(!columns.has("price_per_student"))await sql.unsafe("ALTER TABLE subscriptions ADD COLUMN price_per_student DOUBLE PRECISION NOT NULL DEFAULT 0")}else await sql.unsafe("ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS price_per_student NUMERIC(12,2) NOT NULL DEFAULT 0");
-    if(sql.dialect==="sqlite"){const columns=new Set((await sql.unsafe("PRAGMA table_info(institutions)") as unknown as {name:string}[]).map(item=>item.name));if(!columns.has("planned_student_count"))await sql.unsafe("ALTER TABLE institutions ADD COLUMN planned_student_count INTEGER NOT NULL DEFAULT 0");if(!columns.has("subscription_start_date"))await sql.unsafe("ALTER TABLE institutions ADD COLUMN subscription_start_date TIMESTAMPTZ");if(!columns.has("subscription_end_date"))await sql.unsafe("ALTER TABLE institutions ADD COLUMN subscription_end_date TIMESTAMPTZ")}else{await sql.unsafe("ALTER TABLE institutions ADD COLUMN IF NOT EXISTS planned_student_count INTEGER NOT NULL DEFAULT 0");await sql.unsafe("ALTER TABLE institutions ADD COLUMN IF NOT EXISTS subscription_start_date TIMESTAMPTZ");await sql.unsafe("ALTER TABLE institutions ADD COLUMN IF NOT EXISTS subscription_end_date TIMESTAMPTZ")}
-    if(sql.dialect==="sqlite"){
-      const tableSql = await sql.unsafe("SELECT sql FROM sqlite_master WHERE type='table' AND name='whatsapp_addon_subscriptions'");
-      const currentSql = String((tableSql[0] as { sql?: string })?.sql || "");
-      if(currentSql.includes("amount_paid=student_count*price_per_student")){
-        await sql.unsafe("PRAGMA foreign_keys=OFF;");
-        await sql.unsafe("ALTER TABLE whatsapp_addon_subscriptions RENAME TO whatsapp_addon_subscriptions_old;");
-        await sql.unsafe(`CREATE TABLE whatsapp_addon_subscriptions(id TEXT PRIMARY KEY,institution_id TEXT NOT NULL REFERENCES institutions(id) ON DELETE RESTRICT,student_count INTEGER NOT NULL CHECK(student_count>0),price_per_student DOUBLE PRECISION NOT NULL CHECK(price_per_student>0),amount_paid DOUBLE PRECISION NOT NULL CHECK((student_count<=100 AND amount_paid=10000) OR (student_count>100 AND amount_paid=student_count*price_per_student)),status TEXT NOT NULL CHECK(status IN ('PENDING','ACTIVE','EXPIRED','FAILED','CANCELLED')),payment_status TEXT NOT NULL DEFAULT 'Pending' CHECK(payment_status IN ('Pending','Paid','Failed','Cancelled')),currency TEXT NOT NULL DEFAULT 'INR' CHECK(currency='INR'),activation_date TIMESTAMPTZ NOT NULL,expiry_date TIMESTAMPTZ NOT NULL,razorpay_order_id TEXT NOT NULL UNIQUE,razorpay_payment_id TEXT UNIQUE,razorpay_signature TEXT,created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,CHECK(expiry_date>activation_date));`);
-        await sql.unsafe("INSERT INTO whatsapp_addon_subscriptions SELECT * FROM whatsapp_addon_subscriptions_old;");
-        await sql.unsafe("DROP TABLE whatsapp_addon_subscriptions_old;");
-        await sql.unsafe("PRAGMA foreign_keys=ON;");
-      }
-    }else{
+    await sql.unsafe("ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS price_per_student NUMERIC(12,2) NOT NULL DEFAULT 0");
+    await sql.unsafe("ALTER TABLE institutions ADD COLUMN IF NOT EXISTS planned_student_count INTEGER NOT NULL DEFAULT 0");await sql.unsafe("ALTER TABLE institutions ADD COLUMN IF NOT EXISTS subscription_start_date TIMESTAMPTZ");await sql.unsafe("ALTER TABLE institutions ADD COLUMN IF NOT EXISTS subscription_end_date TIMESTAMPTZ")
+
       await sql.unsafe(`DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'whatsapp_addon_amount_matches_students') THEN ALTER TABLE whatsapp_addon_subscriptions DROP CONSTRAINT whatsapp_addon_amount_matches_students; ALTER TABLE whatsapp_addon_subscriptions ADD CONSTRAINT whatsapp_addon_amount_matches_students CHECK ((student_count <= 100 AND amount_paid = 10000) OR (student_count > 100 AND amount_paid = student_count * price_per_student)); END IF; END $$;`);
-    }
-    if(sql.dialect==="sqlite"){
-      const attSql = await sql.unsafe("SELECT sql FROM sqlite_master WHERE type='table' AND name='attendance'");
-      const currentAttSql = String((attSql[0] as { sql?: string })?.sql || "");
-      if(currentAttSql && !currentAttSql.includes("Excused")){
-        await sql.unsafe("PRAGMA foreign_keys=OFF;");
-        await sql.unsafe("ALTER TABLE attendance RENAME TO attendance_old;");
-        await sql.unsafe(`CREATE TABLE attendance(id TEXT PRIMARY KEY,institution_id TEXT NOT NULL REFERENCES institutions(id),student_id TEXT NOT NULL REFERENCES students(id) ON DELETE CASCADE,date TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('Present','Absent','Late','Leave','Excused','Half-day','Half Day')),remarks TEXT NOT NULL DEFAULT '',marked_by TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(student_id,date));`);
-        await sql.unsafe("INSERT INTO attendance SELECT id,institution_id,student_id,date,status,remarks,marked_by,created_at,updated_at FROM attendance_old;");
-        await sql.unsafe("DROP TABLE attendance_old;");
-        await sql.unsafe("CREATE INDEX IF NOT EXISTS idx_attendance_scope ON attendance(institution_id,date,status);");
-        await sql.unsafe("PRAGMA foreign_keys=ON;");
-      }
-    }else{
+
+
       await sql.unsafe(`DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'attendance_status_check') THEN ALTER TABLE attendance DROP CONSTRAINT attendance_status_check; END IF; ALTER TABLE attendance ADD CONSTRAINT attendance_status_check CHECK(status IN ('Present','Absent','Late','Leave','Excused','Half-day','Half Day')); END $$;`);
-    }
+
+      await sql.unsafe(`DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE table_name = 'school_assets' AND constraint_name = 'school_assets_kind_check') THEN
+          ALTER TABLE school_assets DROP CONSTRAINT school_assets_kind_check;
+        END IF;
+        ALTER TABLE school_assets ADD CONSTRAINT school_assets_kind_check CHECK(kind IN ('logo','signature','payment-qr') OR kind LIKE 'student-photo:%' OR kind LIKE 'payment-screenshot:%');
+      END $$;`);
+
+      await sql.unsafe(`CREATE TABLE IF NOT EXISTS school_qr_payments(
+        id TEXT PRIMARY KEY,
+        institution_id TEXT NOT NULL REFERENCES institutions(id) ON DELETE CASCADE,
+        student_id TEXT NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+        fee_id TEXT NOT NULL REFERENCES fees(id) ON DELETE RESTRICT,
+        amount DOUBLE PRECISION NOT NULL CHECK(amount > 0),
+        utr_number TEXT NOT NULL,
+        payment_date TEXT NOT NULL,
+        screenshot_asset_id TEXT,
+        status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','VERIFIED','REJECTED','REFUNDED')),
+        rejection_reason TEXT NOT NULL DEFAULT '',
+        verified_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+        verified_at TIMESTAMPTZ,
+        payment_id TEXT REFERENCES payments(id) ON DELETE SET NULL,
+        notes TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(institution_id, utr_number)
+      );
+      CREATE INDEX IF NOT EXISTS idx_school_qr_payments_scope ON school_qr_payments(institution_id, status, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_school_qr_payments_student ON school_qr_payments(institution_id, student_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_school_qr_payments_utr ON school_qr_payments(institution_id, utr_number);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_school_qr_payments_utr_upper ON school_qr_payments(institution_id, UPPER(utr_number));`);
+
   })().catch((error) => {
     initializing = undefined;
     throw error;
@@ -719,18 +652,68 @@ export async function getInstitution(institutionId: string) {
     diseCode: string; website: string; city: string; state: string; pinCode: string;
     principalName: string; registrationNumber: string; affiliation: string; motto: string; schoolType: string;
     feeReceiptTitle: string; feeReceiptSubheader: string; payslipTitle: string; payslipSubheader: string; footerText: string; signatureLabel: string;
+    upiEnabled: boolean; upiId: string; payeeName: string; paymentMethodName: string; bankName: string; accountNumber: string; ifscCode: string; paymentInstructions: string;
   }>(
-    `SELECT i.id,i.name,COALESCE(s.school_address,'') address,COALESCE(s.school_phone,'') phone,COALESCE(s.school_email,'') email,COALESCE(s.logo_url,'') AS "logoUrl",COALESCE(s.academic_year,'2026-2027') AS "academicYear",COALESCE(s.school_code,'') AS "schoolCode",COALESCE(s.dise_code,'') AS "diseCode",COALESCE(s.website,'') website,COALESCE(s.city,'') city,COALESCE(s.state,'') state,COALESCE(s.pin_code,'') AS "pinCode",COALESCE(s.principal_name,'') AS "principalName",COALESCE(s.registration_number,'') AS "registrationNumber",COALESCE(s.affiliation,'') affiliation,COALESCE(s.motto,'') motto,COALESCE(s.school_type,'') AS "schoolType",COALESCE(s.fee_receipt_title,'Fee Payment Receipt') AS "feeReceiptTitle",COALESCE(s.fee_receipt_subheader,'Standard Fee Receipt Template') AS "feeReceiptSubheader",COALESCE(s.payslip_title,'Pay Slip') AS "payslipTitle",COALESCE(s.payslip_subheader,'Standard Pay Slip Template') AS "payslipSubheader",COALESCE(s.footer_text,'') AS "footerText",COALESCE(s.signature_label,'Authorized Signatory') AS "signatureLabel" FROM institutions i LEFT JOIN settings s ON s.institution_id=i.id WHERE i.id=?`,
+    `SELECT i.id,i.name,COALESCE(s.school_address,'') address,COALESCE(s.school_phone,'') phone,COALESCE(s.school_email,'') email,COALESCE(s.logo_url,'') AS "logoUrl",COALESCE(s.academic_year,'2026-2027') AS "academicYear",COALESCE(s.school_code,'') AS "schoolCode",COALESCE(s.dise_code,'') AS "diseCode",COALESCE(s.website,'') website,COALESCE(s.city,'') city,COALESCE(s.state,'') state,COALESCE(s.pin_code,'') AS "pinCode",COALESCE(s.principal_name,'') AS "principalName",COALESCE(s.registration_number,'') AS "registrationNumber",COALESCE(s.affiliation,'') affiliation,COALESCE(s.motto,'') motto,COALESCE(s.school_type,'') AS "schoolType",COALESCE(s.fee_receipt_title,'Fee Payment Receipt') AS "feeReceiptTitle",COALESCE(s.fee_receipt_subheader,'Standard Fee Receipt Template') AS "feeReceiptSubheader",COALESCE(s.payslip_title,'Pay Slip') AS "payslipTitle",COALESCE(s.payslip_subheader,'Standard Pay Slip Template') AS "payslipSubheader",COALESCE(s.footer_text,'') AS "footerText",COALESCE(s.signature_label,'Authorized Signatory') AS "signatureLabel",COALESCE(s.upi_enabled,FALSE) AS "upiEnabled",COALESCE(s.upi_id,'') AS "upiId",COALESCE(s.payee_name,'') AS "payeeName",COALESCE(s.payment_method_name,'School UPI / QR Code') AS "paymentMethodName",COALESCE(s.bank_name,'') AS "bankName",COALESCE(s.account_number,'') AS "accountNumber",COALESCE(s.ifsc_code,'') AS "ifscCode",COALESCE(s.payment_instructions,'') AS "paymentInstructions" FROM institutions i LEFT JOIN settings s ON s.institution_id=i.id WHERE i.id=?`,
     [institutionId],
     await ready(),
   );
 }
 export async function findUserByEmail(email: string) {
   return await row<DbUser & { passwordHash: string; status:string }>(
-    'SELECT id,email,name,password_hash AS "passwordHash",role,status,institution_id AS "institutionId" FROM users WHERE email=?',
+    'SELECT id,email,name,password_hash AS "passwordHash",role,status,institution_id AS "institutionId" FROM users WHERE LOWER(email)=?',
     [email.toLowerCase()],
     await ready(),
   );
+}
+
+export async function findUserByEmailOrPhone(identifier: string) {
+  const clean = identifier.trim();
+  const lower = clean.toLowerCase();
+  const digits = clean.replace(/[^0-9]/g, "");
+  const db = await ready();
+
+  // 1. Try exact email lookup
+  let u = await row<DbUser & { passwordHash: string; status: string }>(
+    'SELECT id,email,name,password_hash AS "passwordHash",role,status,institution_id AS "institutionId" FROM users WHERE LOWER(email)=?',
+    [lower],
+    db,
+  );
+  if (u) return u;
+
+  // 2. Parent lookup: Parent numbers come from the school's existing student profiles (students.parent_phone / parent_whatsapp)
+  if (digits.length >= 7) {
+    const last10 = digits.length > 10 ? digits.slice(-10) : digits;
+    const parentUser = await row<DbUser & { passwordHash: string; status: string }>(
+      `SELECT u.id, u.email, u.name, u.password_hash AS "passwordHash", u.role, u.status, u.institution_id AS "institutionId"
+       FROM users u
+       JOIN students s ON s.institution_id = u.institution_id
+       LEFT JOIN parent_students ps ON ps.parent_user_id=u.id AND ps.student_id=s.id AND ps.institution_id=s.institution_id
+       WHERE u.role='PARENT' AND s.status<>'Deleted' AND (
+         s.parent_phone=? OR s.parent_phone LIKE ? OR s.parent_phone LIKE ? OR
+         s.parent_whatsapp=? OR s.parent_whatsapp LIKE ? OR s.parent_whatsapp LIKE ?
+       )
+       ORDER BY CASE WHEN ps.parent_user_id IS NOT NULL THEN 0 ELSE 1 END, s.created_at DESC
+       LIMIT 1`,
+      [clean, `%${digits}%`, `%${last10}%`, clean, `%${digits}%`, `%${last10}%`],
+      db,
+    );
+    if (parentUser) return parentUser;
+
+    // 3. Teacher lookup: Teacher numbers come from existing teacher profiles (teachers.phone)
+    const teacherUser = await row<DbUser & { passwordHash: string; status: string }>(
+      `SELECT u.id, u.email, u.name, u.password_hash AS "passwordHash", u.role, u.status, u.institution_id AS "institutionId"
+       FROM users u
+       JOIN teachers t ON LOWER(t.email) = LOWER(u.email) AND t.institution_id = u.institution_id
+       WHERE u.role='TEACHER' AND (t.phone=? OR t.phone LIKE ? OR t.phone LIKE ?)
+       LIMIT 1`,
+      [clean, `%${digits}%`, `%${last10}%`],
+      db,
+    );
+    if (teacherUser) return teacherUser;
+  }
+
+  return undefined;
 }
 function defaultAcademicYear(date = new Date()) {
   const year = date.getUTCFullYear();
@@ -873,7 +856,7 @@ export async function updateUserPassword(
   });
 }
 
-const studentSelect = `SELECT s.id,s.name,s.admission,s.gender,COALESCE(s.blood_group,'') AS "bloodGroup",COALESCE(s.mother_name,'') AS "motherName",COALESCE(s.special_quota,'') AS "specialQuota",COALESCE(s.special_quota_description,'') AS "specialQuotaDescription",s.date_of_birth AS "dateOfBirth",s.class_name AS "className",s.section,s.grade,s.roll_number AS "rollNumber",s.parent,s.parent_phone AS "parentPhone",s.whatsapp_enabled AS "whatsappEnabled",s.whatsapp_attendance AS "whatsappAttendance",s.whatsapp_academics AS "whatsappAcademics",s.whatsapp_fees AS "whatsappFees",s.whatsapp_notices AS "whatsappNotices",s.whatsapp_general AS "whatsappGeneral",s.parent_email AS "parentEmail",s.address,s.admission_date AS "admissionDate",s.attendance,s.fee,s.total_fee AS "totalFee",s.paid_fee AS "paidFee",s.pending_fee AS "pendingFee",s.status,s.academic_year AS "academicYear",COALESCE(s.leaving_date,'') AS "leavingDate",COALESCE(s.leaving_reason,'') AS "leavingReason",COALESCE(s.leaving_remarks,'') AS "leavingRemarks",s.created_at::text AS "createdAt" FROM students s`;
+const studentSelect = `SELECT s.id,s.name,s.admission,s.gender,COALESCE(s.photo_path,'') AS "photoPath",COALESCE(s.blood_group,'') AS "bloodGroup",COALESCE(s.mother_name,'') AS "motherName",COALESCE(s.special_quota,'') AS "specialQuota",COALESCE(s.special_quota_description,'') AS "specialQuotaDescription",s.date_of_birth AS "dateOfBirth",s.class_name AS "className",s.section,s.grade,s.roll_number AS "rollNumber",s.parent,s.parent_phone AS "parentPhone",s.whatsapp_enabled AS "whatsappEnabled",s.whatsapp_attendance AS "whatsappAttendance",s.whatsapp_academics AS "whatsappAcademics",s.whatsapp_fees AS "whatsappFees",s.whatsapp_notices AS "whatsappNotices",s.whatsapp_general AS "whatsappGeneral",s.parent_email AS "parentEmail",s.address,s.admission_date AS "admissionDate",s.attendance,s.fee,s.total_fee AS "totalFee",s.paid_fee AS "paidFee",s.pending_fee AS "pendingFee",s.status,s.academic_year AS "academicYear",COALESCE(s.leaving_date,'') AS "leavingDate",COALESCE(s.leaving_reason,'') AS "leavingReason",COALESCE(s.leaving_remarks,'') AS "leavingRemarks",s.created_at::text AS "createdAt" FROM students s`;
 async function refreshFees(institutionId: string, sql?: Sql) {
   const db = sql ?? (await ready()),
     today = new Date().toISOString().slice(0, 10);
@@ -895,6 +878,7 @@ export async function listStudents(
     className?: string;
     section?: string;
     fee?: string;
+    studentId?: string;
     academicYear?: string;
     status?: string;
     limit?: number;
@@ -909,6 +893,7 @@ export async function listStudents(
   const scopedSelect=filters.academicYear?studentSelect.replace('s.class_name AS "className",s.section','e.class_name AS "className",e.section').replace('s.academic_year AS "academicYear"','e.academic_year AS "academicYear"').replace(' FROM students s',' FROM students s JOIN student_enrollments e ON e.student_id=s.id AND e.institution_id=s.institution_id') : studentSelect;
   if(filters.academicYear){where.push("e.academic_year=?");args.push(filters.academicYear)}
   if(filters.status&&filters.status!=="All"){where.push("s.status=?");args.push(filters.status)}
+  if(filters.studentId){where.push("s.id=?");args.push(filters.studentId)}
   if (filters.search) {
     where.push(
       "(s.name ILIKE ? OR s.admission ILIKE ? OR s.roll_number ILIKE ? OR s.parent_phone ILIKE ? OR COALESCE(s.special_quota,'') ILIKE ?)",
@@ -938,6 +923,11 @@ export async function getStudent(institutionId: string, id: string) {
     [institutionId, id],
     await ready(),
   );
+}
+export async function updateStudentPhotoPath(institutionId:string,id:string,photoPath:string|null){
+ const db=await ready(),changed=await run("UPDATE students SET photo_path=?,updated_at=CURRENT_TIMESTAMP WHERE institution_id=? AND id=? AND status<>'Deleted'",[photoPath,institutionId,id],db);
+ if(!changed)throw new Error("Student not found.");
+ return getStudent(institutionId,id);
 }
 export async function findStudentByAdmission(
   institutionId: string,
@@ -1170,7 +1160,7 @@ export async function teacherPortalScope(institutionId:string,email:string){
   const teachers=await rows<DbTeacher>(`SELECT id,name,employee_id AS "employeeId",email,phone,department,subject,assigned_classes AS classes,joining_date AS "joiningDate",salary,status,created_at::text AS "createdAt" FROM teachers WHERE institution_id=? AND LOWER(TRIM(email))=LOWER(TRIM(?)) AND status='Active' ORDER BY created_at`,[institutionId,email],db);
   if(teachers.length!==1)throw new Error(teachers.length?"Teacher account is linked to multiple active staff records.":"Teacher account is not linked to an active staff record.");
   const teacher=teachers[0];
-  const timetable=await rows<{id:string;academicYear:string;className:string;section:string;subject:string;weekday:number;startTime:string;endTime:string}>(`SELECT id,academic_year AS "academicYear",class_name AS "className",section,subject,weekday,start_time AS "startTime",end_time AS "endTime" FROM timetable_entries WHERE institution_id=? AND teacher_id=? ORDER BY weekday,start_time,class_name,section`,[institutionId,teacher.id],db);
+  const timetable=await rows<{id:string;academicYear:string;className:string;section:string;subject:string;weekday:number;startTime:string;endTime:string}>(`SELECT id,academic_year AS "academicYear",class_name AS "className",section,subject,weekday,start_time AS "startTime",end_time AS "endTime" FROM timetable_entries WHERE institution_id=? AND teacher_id=? AND status='Published' ORDER BY weekday,start_time,class_name,section`,[institutionId,teacher.id],db);
   const unique=new Map<string,TeacherPortalAssignment>();
   for(const item of timetable){
     const assignment={academicYear:item.academicYear,className:item.className,section:item.section,subject:item.subject};
@@ -1377,10 +1367,15 @@ export async function listAttendance(
   institutionId: string,
   filters: {
     date?: string;
+    from?: string;
+    to?: string;
+    studentId?: string;
     className?: string;
     section?: string;
     status?: string;
     academicYear?: string;
+    limit?: number;
+    offset?: number;
   } = {},
 ) {
   const db=await ready(),where = ["a.institution_id=?", "s.status<>'Deleted'"],
@@ -1388,6 +1383,7 @@ export async function listAttendance(
   if(filters.academicYear){await ensureStudentEnrollments(institutionId,db);const year=await row<{startMonth:number;endMonth:number}>('SELECT start_month AS "startMonth",end_month AS "endMonth" FROM academic_years WHERE institution_id=? AND name=?',[institutionId,filters.academicYear],db),startYear=Number(filters.academicYear.slice(0,4)),startMonth=year?.startMonth||4,endMonth=year?.endMonth||3,endYear=endMonth<startMonth?startYear+1:startYear,start=`${startYear}-${String(startMonth).padStart(2,'0')}-01`,endDate=new Date(Date.UTC(endYear,endMonth,0)).toISOString().slice(0,10);where.push("e.academic_year=?","a.date>=?","a.date<=?");args.push(filters.academicYear,start,endDate)}
   for (const [k, col] of [
     ["date", "a.date"],
+    ["studentId", "a.student_id"],
     ["className", filters.academicYear?"e.class_name":"s.class_name"],
     ["section", filters.academicYear?"e.section":"s.section"],
     ["status", "a.status"],
@@ -1396,8 +1392,12 @@ export async function listAttendance(
       where.push(`${col}=?`);
       args.push(filters[k]);
     }
+  if (filters.from) { where.push("a.date>=?"); args.push(filters.from); }
+  if (filters.to) { where.push("a.date<=?"); args.push(filters.to); }
+  let query = `SELECT a.id,a.date,s.name AS "studentName",s.admission,${filters.academicYear?'e.class_name':'s.class_name'} AS "className",${filters.academicYear?'e.section':'s.section'} AS section,a.status,a.remarks,a.marked_by AS "markedBy" FROM attendance a JOIN students s ON s.id=a.student_id AND s.institution_id=a.institution_id ${filters.academicYear?'JOIN student_enrollments e ON e.student_id=s.id AND e.institution_id=s.institution_id':''} WHERE ${where.join(" AND ")} ORDER BY a.date DESC,s.name`;
+  if(filters.limit){query += " LIMIT ? OFFSET ?";args.push(filters.limit,filters.offset??0)}
   return await rows(
-    `SELECT a.id,a.date,s.name AS "studentName",s.admission,${filters.academicYear?'e.class_name':'s.class_name'} AS "className",${filters.academicYear?'e.section':'s.section'} AS section,a.status,a.remarks,a.marked_by AS "markedBy" FROM attendance a JOIN students s ON s.id=a.student_id AND s.institution_id=a.institution_id ${filters.academicYear?'JOIN student_enrollments e ON e.student_id=s.id AND e.institution_id=s.institution_id':''} WHERE ${where.join(" AND ")} ORDER BY a.date DESC,s.name`,
+    query,
     args,
     db,
   );
@@ -1467,10 +1467,13 @@ export async function listFees(
   institutionId: string,
   filters: {
     search?: string;
+    studentId?: string;
     className?: string;
     section?: string;
     status?: string;
     academicYear?: string;
+    limit?: number;
+    offset?: number;
   } = {},
 ) {
   const db = await ready();
@@ -1485,6 +1488,7 @@ export async function listFees(
     const q = `%${filters.search}%`;
     args.push(q, q, q, q, q);
   }
+  if(filters.studentId){where.push("f.student_id=?");args.push(filters.studentId)}
   for (const [k, col] of [
     ["className", "COALESCE(e.class_name,s.class_name)"],
     ["section", "COALESCE(e.section,s.section)"],
@@ -1498,8 +1502,10 @@ export async function listFees(
     where.push("f.academic_year=?");
     args.push(filters.academicYear);
   }
+  let query=`SELECT f.id,f.student_id AS "studentId",s.name AS "studentName",s.admission,s.roll_number AS "rollNumber",s.parent,COALESCE(e.class_name,s.class_name) AS "className",COALESCE(e.section,s.section) AS section,f.invoice_number AS "invoiceNumber",f.fee_type AS "feeType",f.academic_year AS "academicYear",f.total_amount AS "totalAmount",f.discount,f.final_amount AS "finalAmount",f.paid_amount AS "paidAmount",f.pending_amount AS "pendingAmount",f.due_date AS "dueDate",f.status,(SELECT p.receipt_number FROM payments p WHERE p.fee_id=f.id AND p.institution_id=f.institution_id AND p.status='Success' ORDER BY p.created_at DESC,p.id DESC LIMIT 1) AS "latestReceipt",f.created_at::text AS "createdAt" FROM fees f JOIN students s ON s.id=f.student_id AND s.institution_id=f.institution_id LEFT JOIN student_enrollments e ON e.student_id=f.student_id AND e.institution_id=f.institution_id AND e.academic_year=f.academic_year WHERE ${where.join(" AND ")} ORDER BY f.due_date,f.created_at DESC`;
+  if(filters.limit){query+=" LIMIT ? OFFSET ?";args.push(filters.limit,filters.offset??0)}
   return await rows<Record<string, string | number>>(
-    `SELECT f.id,f.student_id AS "studentId",s.name AS "studentName",s.admission,s.roll_number AS "rollNumber",s.parent,COALESCE(e.class_name,s.class_name) AS "className",COALESCE(e.section,s.section) AS section,f.invoice_number AS "invoiceNumber",f.fee_type AS "feeType",f.academic_year AS "academicYear",f.total_amount AS "totalAmount",f.discount,f.final_amount AS "finalAmount",f.paid_amount AS "paidAmount",f.pending_amount AS "pendingAmount",f.due_date AS "dueDate",f.status,(SELECT p.receipt_number FROM payments p WHERE p.fee_id=f.id AND p.institution_id=f.institution_id AND p.status='Success' ORDER BY p.created_at DESC,p.id DESC LIMIT 1) AS "latestReceipt",f.created_at::text AS "createdAt" FROM fees f JOIN students s ON s.id=f.student_id AND s.institution_id=f.institution_id LEFT JOIN student_enrollments e ON e.student_id=f.student_id AND e.institution_id=f.institution_id AND e.academic_year=f.academic_year WHERE ${where.join(" AND ")} ORDER BY f.due_date,f.created_at DESC`,
+    query,
     args,
     db,
   );
@@ -2604,6 +2610,25 @@ export async function dashboardData(institutionId: string, academicYear: string)
     finance: {income:(finance?.income??0)/100,expenses:(finance?.expenses??0)/100},
   };
 }
+
+export async function schoolReportAnalytics(institutionId:string,academicYear:string,from:string,to:string){
+  validDate(from);validDate(to);if(from>to)throw new Error("The start date must be on or before the end date.");
+  const days=Math.floor((Date.parse(`${to}T00:00:00Z`)-Date.parse(`${from}T00:00:00Z`))/86400000)+1;if(days>366)throw new Error("Report date ranges cannot exceed 366 days.");
+  const db=await ready(),year=await row<{name:string;startMonth:number;endMonth:number}>("SELECT name,start_month AS \"startMonth\",end_month AS \"endMonth\" FROM academic_years WHERE institution_id=? AND name=? AND status='Active'",[institutionId,academicYear],db);
+  if(!year)throw new Error("Academic year unavailable.");
+  const [studentCounts,classes,admissions,attendance,academics,fees,staff,paymentModes]=await Promise.all([
+    row<{active:number;inactive:number;total:number;girls:number;boys:number}>("SELECT COUNT(*) FILTER (WHERE s.status='Active')::int AS active,COUNT(*) FILTER (WHERE s.status NOT IN ('Active','Deleted'))::int AS inactive,COUNT(*) FILTER (WHERE s.status<>'Deleted')::int AS total,COUNT(*) FILTER (WHERE LOWER(s.gender) IN ('female','girl'))::int AS girls,COUNT(*) FILTER (WHERE LOWER(s.gender) IN ('male','boy'))::int AS boys FROM student_enrollments e JOIN students s ON s.id=e.student_id AND s.institution_id=e.institution_id WHERE e.institution_id=? AND e.academic_year=? AND e.status='Active'",[institutionId,academicYear],db),
+    rows<{className:string;section:string;students:number}>("SELECT e.class_name AS \"className\",e.section,COUNT(*)::int students FROM student_enrollments e JOIN students s ON s.id=e.student_id AND s.institution_id=e.institution_id WHERE e.institution_id=? AND e.academic_year=? AND e.status='Active' AND s.status='Active' GROUP BY e.class_name,e.section ORDER BY e.class_name,e.section LIMIT 12",[institutionId,academicYear],db),
+    rows<{month:string;count:number}>("SELECT SUBSTRING(s.admission_date,1,7) AS month,COUNT(*)::int count FROM students s WHERE s.institution_id=? AND s.status<>'Deleted' AND s.admission_date>=? AND s.admission_date<=? AND s.admission_date<>'' GROUP BY SUBSTRING(s.admission_date,1,7) ORDER BY month",[institutionId,from,to],db),
+    row<{recorded:number;present:number;late:number;halfDay:number;absent:number}>("SELECT COUNT(*) FILTER (WHERE a.status IN ('Present','Late','Absent','Half-day','Half Day'))::int recorded,COUNT(*) FILTER (WHERE a.status='Present')::int present,COUNT(*) FILTER (WHERE a.status='Late')::int late,COUNT(*) FILTER (WHERE a.status IN ('Half-day','Half Day'))::int \"halfDay\",COUNT(*) FILTER (WHERE a.status='Absent')::int absent FROM attendance a JOIN student_enrollments e ON e.student_id=a.student_id AND e.institution_id=a.institution_id AND e.academic_year=? AND e.status='Active' JOIN students s ON s.id=a.student_id AND s.institution_id=a.institution_id WHERE a.institution_id=? AND a.date>=? AND a.date<=? AND s.status<>'Deleted'",[academicYear,institutionId,from,to],db),
+    row<{averagePercent:number|null;results:number;passed:number;failed:number}>("SELECT AVG(CASE WHEN COALESCE(r.mark_status,'Scored')='Scored' AND COALESCE(e.max_marks_cent,ROUND(e.max_marks*100))>0 THEN (COALESCE(r.marks_cent,ROUND(r.marks*100))*100.0/COALESCE(e.max_marks_cent,ROUND(e.max_marks*100))) END) AS \"averagePercent\",COUNT(*) FILTER (WHERE COALESCE(r.mark_status,'Scored')='Scored')::int results,COUNT(*) FILTER (WHERE r.status='Pass' AND COALESCE(r.mark_status,'Scored')='Scored')::int passed,COUNT(*) FILTER (WHERE r.status='Fail' AND COALESCE(r.mark_status,'Scored')='Scored')::int failed FROM class_results r JOIN class_exams e ON e.id=r.exam_id AND e.institution_id=r.institution_id WHERE r.institution_id=? AND e.academic_year=?",[institutionId,academicYear],db),
+    row<{total:number;collected:number;outstanding:number}>("SELECT COALESCE(SUM(f.final_amount),0) total,COALESCE(SUM(COALESCE(p.collected,0)),0) collected,COALESCE(SUM(CASE WHEN f.final_amount>COALESCE(p.paid,0) THEN f.final_amount-COALESCE(p.paid,0) ELSE 0 END),0) outstanding FROM fees f LEFT JOIN (SELECT institution_id,fee_id,SUM(CASE WHEN payment_date>=? AND payment_date<=? THEN amount ELSE 0 END) collected,SUM(amount) paid FROM payments WHERE institution_id=? AND status='Success' GROUP BY institution_id,fee_id) p ON p.institution_id=f.institution_id AND p.fee_id=f.id WHERE f.institution_id=? AND f.academic_year=?",[from,to,institutionId,institutionId,academicYear],db),
+    row<{teachers:number;staff:number}>("SELECT (SELECT COUNT(*)::int FROM teachers WHERE institution_id=? AND status='Active') teachers,(SELECT COUNT(*)::int FROM users WHERE institution_id=? AND role IN ('STAFF','ACCOUNTANT','LIBRARIAN') AND COALESCE(status,'Active')='Active') staff",[institutionId,institutionId],db),
+    rows<{method:string;amount:number;count:number}>("SELECT p.payment_method method,COALESCE(SUM(p.amount),0) amount,COUNT(*)::int count FROM payments p JOIN fees f ON f.id=p.fee_id AND f.institution_id=p.institution_id WHERE p.institution_id=? AND f.academic_year=? AND p.status='Success' AND p.payment_date>=? AND p.payment_date<=? GROUP BY p.payment_method ORDER BY amount DESC",[institutionId,academicYear,from,to],db),
+  ]);
+  const recorded=Number(attendance?.recorded||0),present=Number(attendance?.present||0),late=Number(attendance?.late||0),halfDay=Number(attendance?.halfDay||0);
+  return {academicYear,from,to,students:{active:Number(studentCounts?.active||0),inactive:Number(studentCounts?.inactive||0),total:Number(studentCounts?.total||0),girls:Number(studentCounts?.girls||0),boys:Number(studentCounts?.boys||0)},classes,admissions,attendance:{recorded,present,late,halfDay,absent:Number(attendance?.absent||0),percentage:recorded?Math.round(((present+late+halfDay*0.5)/recorded)*1000)/10:null},academics:{averagePercent:academics?.averagePercent===null||academics?.averagePercent===undefined?null:Math.round(Number(academics.averagePercent)*10)/10,results:Number(academics?.results||0),passed:Number(academics?.passed||0),failed:Number(academics?.failed||0)},fees:{total:Number(fees?.total||0),collected:Number(fees?.collected||0),outstanding:Number(fees?.outstanding||0)},staff:{teachers:Number(staff?.teachers||0),staff:Number(staff?.staff||0)},paymentModes};
+}
 export type CompleteSettingsInput = {
   name:string; academicYear:string; schoolCode:string; startMonth:number; endMonth:number;
   address:string; phone:string; email:string; diseCode:string; website:string; city:string; state:string; pinCode:string;
@@ -2611,6 +2636,14 @@ export type CompleteSettingsInput = {
   feeReceiptTitle:string; feeReceiptSubheader:string; payslipTitle:string; payslipSubheader:string; footerText:string; signatureLabel:string;
   academicYears:{name:string;startMonth:number;endMonth:number;status:"Active"|"Archived"}[];
   classes:{name:string;sections:string[]}[];
+  upiEnabled?: boolean;
+  upiId?: string;
+  payeeName?: string;
+  paymentMethodName?: string;
+  bankName?: string;
+  accountNumber?: string;
+  ifscCode?: string;
+  paymentInstructions?: string;
 };
 
 export async function getCompleteSettings(institutionId:string) {
@@ -2620,14 +2653,14 @@ export async function getCompleteSettings(institutionId:string) {
   const sectionRows=await rows<{classId:string;name:string}>('SELECT class_id AS "classId",name FROM institution_sections WHERE institution_id=? AND status=\'Active\' ORDER BY sort_order,name',[institutionId],db);
   const assets=await rows<{kind:string}>('SELECT kind FROM school_assets WHERE institution_id=?',[institutionId],db);
   const rollCount=await row<{count:number}>("SELECT COUNT(*)::int count FROM students WHERE institution_id=? AND roll_number<>''",[institutionId],db);
-  return { ...institution, rollCount:rollCount.count, logoUrl:assets.some(x=>x.kind==='logo')?"/api/settings/assets/logo":"", signatureUrl:assets.some(x=>x.kind==='signature')?"/api/settings/assets/signature":"", years, classes:classRows.map(item=>({id:item.id,name:item.name,active:item.status==='Active'&&item.name.trim().toUpperCase()!=="LG",sections:sectionRows.filter(x=>x.classId===item.id).map(x=>x.name)})) };
+  return { ...institution, rollCount:rollCount.count, logoUrl:assets.some(x=>x.kind==='logo')?"/api/settings/assets/logo":"", signatureUrl:assets.some(x=>x.kind==='signature')?"/api/settings/assets/signature":"", qrCodeUrl:assets.some(x=>x.kind==='payment-qr')?"/api/settings/assets/payment-qr":"", years, classes:classRows.map(item=>({id:item.id,name:item.name,active:item.status==='Active'&&item.name.trim().toUpperCase()!=="LG",sections:sectionRows.filter(x=>x.classId===item.id).map(x=>x.name)})) };
 }
 
 export async function saveCompleteSettings(institutionId:string,userId:string,input:CompleteSettingsInput){
   const db=await ready();
   await db.begin(async tx=>{
     await run("UPDATE institutions SET name=? WHERE id=?",[input.name,institutionId],tx);
-    await run(`INSERT INTO settings(institution_id,academic_year,school_code,school_address,school_phone,school_email,dise_code,website,city,state,pin_code,principal_name,registration_number,affiliation,motto,school_type,fee_receipt_title,fee_receipt_subheader,payslip_title,payslip_subheader,footer_text,signature_label) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(institution_id) DO UPDATE SET academic_year=EXCLUDED.academic_year,school_code=EXCLUDED.school_code,school_address=EXCLUDED.school_address,school_phone=EXCLUDED.school_phone,school_email=EXCLUDED.school_email,dise_code=EXCLUDED.dise_code,website=EXCLUDED.website,city=EXCLUDED.city,state=EXCLUDED.state,pin_code=EXCLUDED.pin_code,principal_name=EXCLUDED.principal_name,registration_number=EXCLUDED.registration_number,affiliation=EXCLUDED.affiliation,motto=EXCLUDED.motto,school_type=EXCLUDED.school_type,fee_receipt_title=EXCLUDED.fee_receipt_title,fee_receipt_subheader=EXCLUDED.fee_receipt_subheader,payslip_title=EXCLUDED.payslip_title,payslip_subheader=EXCLUDED.payslip_subheader,footer_text=EXCLUDED.footer_text,signature_label=EXCLUDED.signature_label,updated_at=CURRENT_TIMESTAMP`,[institutionId,input.academicYear,normalizeSchoolCode(input.schoolCode),input.address,input.phone,input.email,input.diseCode,input.website,input.city,input.state,input.pinCode,input.principalName,input.registrationNumber,input.affiliation,input.motto,input.schoolType,input.feeReceiptTitle,input.feeReceiptSubheader,input.payslipTitle,input.payslipSubheader,input.footerText,input.signatureLabel],tx);
+    await run(`INSERT INTO settings(institution_id,academic_year,school_code,school_address,school_phone,school_email,dise_code,website,city,state,pin_code,principal_name,registration_number,affiliation,motto,school_type,fee_receipt_title,fee_receipt_subheader,payslip_title,payslip_subheader,footer_text,signature_label,upi_enabled,upi_id,payee_name,payment_method_name,bank_name,account_number,ifsc_code,payment_instructions) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(institution_id) DO UPDATE SET academic_year=EXCLUDED.academic_year,school_code=EXCLUDED.school_code,school_address=EXCLUDED.school_address,school_phone=EXCLUDED.school_phone,school_email=EXCLUDED.school_email,dise_code=EXCLUDED.dise_code,website=EXCLUDED.website,city=EXCLUDED.city,state=EXCLUDED.state,pin_code=EXCLUDED.pin_code,principal_name=EXCLUDED.principal_name,registration_number=EXCLUDED.registration_number,affiliation=EXCLUDED.affiliation,motto=EXCLUDED.motto,school_type=EXCLUDED.school_type,fee_receipt_title=EXCLUDED.fee_receipt_title,fee_receipt_subheader=EXCLUDED.fee_receipt_subheader,payslip_title=EXCLUDED.payslip_title,payslip_subheader=EXCLUDED.payslip_subheader,footer_text=EXCLUDED.footer_text,signature_label=EXCLUDED.signature_label,upi_enabled=COALESCE(EXCLUDED.upi_enabled,settings.upi_enabled),upi_id=COALESCE(EXCLUDED.upi_id,settings.upi_id),payee_name=COALESCE(EXCLUDED.payee_name,settings.payee_name),payment_method_name=COALESCE(EXCLUDED.payment_method_name,settings.payment_method_name),bank_name=COALESCE(EXCLUDED.bank_name,settings.bank_name),account_number=COALESCE(EXCLUDED.account_number,settings.account_number),ifsc_code=COALESCE(EXCLUDED.ifsc_code,settings.ifsc_code),payment_instructions=COALESCE(EXCLUDED.payment_instructions,settings.payment_instructions),updated_at=CURRENT_TIMESTAMP`,[institutionId,input.academicYear,normalizeSchoolCode(input.schoolCode),input.address,input.phone,input.email,input.diseCode,input.website,input.city,input.state,input.pinCode,input.principalName,input.registrationNumber,input.affiliation,input.motto,input.schoolType,input.feeReceiptTitle,input.feeReceiptSubheader,input.payslipTitle,input.payslipSubheader,input.footerText,input.signatureLabel,input.upiEnabled??null,input.upiId??null,input.payeeName??null,input.paymentMethodName??null,input.bankName??null,input.accountNumber??null,input.ifscCode??null,input.paymentInstructions??null],tx);
     await run("UPDATE academic_years SET is_active=FALSE WHERE institution_id=?",[institutionId],tx);
     for(const year of input.academicYears) await run("INSERT INTO academic_years(id,institution_id,name,start_month,end_month,status,is_active)VALUES(?,?,?,?,?,?,?) ON CONFLICT(institution_id,name) DO UPDATE SET start_month=EXCLUDED.start_month,end_month=EXCLUDED.end_month,status=EXCLUDED.status,is_active=EXCLUDED.is_active,updated_at=CURRENT_TIMESTAMP",[randomUUID(),institutionId,year.name,year.startMonth,year.endMonth,year.status,year.name===input.academicYear],tx);
     for(const [order,item] of input.classes.entries()){
@@ -2653,9 +2686,9 @@ export async function saveCompleteSettings(institutionId:string,userId:string,in
   return getCompleteSettings(institutionId);
 }
 
-export async function putSchoolAsset(institutionId:string,userId:string,kind:"logo"|"signature",mimeType:string,data:Buffer){const db=await ready();await run("INSERT INTO school_assets(id,institution_id,kind,mime_type,data,size_bytes)VALUES(?,?,?,?,?,?) ON CONFLICT(institution_id,kind) DO UPDATE SET mime_type=EXCLUDED.mime_type,data=EXCLUDED.data,size_bytes=EXCLUDED.size_bytes,updated_at=CURRENT_TIMESTAMP",[randomUUID(),institutionId,kind,mimeType,data,data.length],db);await audit(institutionId,userId,`${kind==='logo'?'Logo':'Signature'} Updated`,"SchoolAsset",kind,{},db)}
-export async function getSchoolAsset(institutionId:string,kind:"logo"|"signature"){return row<{mimeType:string;data:Buffer}>('SELECT mime_type AS "mimeType",data FROM school_assets WHERE institution_id=? AND kind=?',[institutionId,kind],await ready())}
-export async function deleteSchoolAsset(institutionId:string,userId:string,kind:"logo"|"signature"){const db=await ready();await run("DELETE FROM school_assets WHERE institution_id=? AND kind=?",[institutionId,kind],db);await audit(institutionId,userId,`${kind==='logo'?'Logo':'Signature'} Removed`,"SchoolAsset",kind,{},db)}
+export async function putSchoolAsset(institutionId:string,userId:string,kind:string,mimeType:string,data:Buffer){const db=await ready();await run("INSERT INTO school_assets(id,institution_id,kind,mime_type,data,size_bytes)VALUES(?,?,?,?,?,?) ON CONFLICT(institution_id,kind) DO UPDATE SET mime_type=EXCLUDED.mime_type,data=EXCLUDED.data,size_bytes=EXCLUDED.size_bytes,updated_at=CURRENT_TIMESTAMP",[randomUUID(),institutionId,kind,mimeType,data,data.length],db);await audit(institutionId,userId,`${kind==='logo'?'Logo':kind==='signature'?'Signature':kind==='payment-qr'?'Payment QR Code':'Student Photo'} Updated`,"SchoolAsset",kind,{},db)}
+export async function getSchoolAsset(institutionId:string,kind:string){return row<{mimeType:string;data:Buffer}>('SELECT mime_type AS "mimeType",data FROM school_assets WHERE institution_id=? AND kind=?',[institutionId,kind],await ready())}
+export async function deleteSchoolAsset(institutionId:string,userId:string,kind:string){const db=await ready();await run("DELETE FROM school_assets WHERE institution_id=? AND kind=?",[institutionId,kind],db);await audit(institutionId,userId,`${kind==='logo'?'Logo':kind==='signature'?'Signature':kind==='payment-qr'?'Payment QR Code':'Student Photo'} Removed`,"SchoolAsset",kind,{},db)}
 
 export type PromotionInput={sourceYear:string;targetYear:string;sourceClass:string;sourceSection:string;targetClass:string;targetSection:string;studentIds:string[]};
 async function ensureStudentEnrollments(institutionId:string,sql?:Sql){const db=sql??await ready();await run("INSERT INTO student_enrollments(id,institution_id,student_id,academic_year,class_name,section,status) SELECT 'legacy-'||s.id||'-'||s.academic_year,s.institution_id,s.id,s.academic_year,s.class_name,s.section,CASE WHEN LOWER(s.status)='active' THEN 'Active' ELSE s.status END FROM students s WHERE s.institution_id=? AND s.academic_year<>'' ON CONFLICT(institution_id,student_id,academic_year) DO NOTHING",[institutionId],db)}
@@ -3552,7 +3585,7 @@ export async function getClassWorkspace(institutionId: string, slug: string, aca
     listAttendance(institutionId, { className: definition.name, academicYear:year }),
     listFees(institutionId, { className: definition.name, academicYear:year }),
     listPayments(institutionId, { className: definition.name, academicYear:year }),
-    rows('SELECT t.id,t.section,t.subject,t.weekday,t.start_time AS "startTime",t.end_time AS "endTime",COALESCE(te.name,\'Unassigned\') AS "teacherName",t.teacher_id AS "teacherId" FROM timetable_entries t LEFT JOIN teachers te ON te.id=t.teacher_id AND te.institution_id=t.institution_id WHERE t.institution_id=? AND t.class_name=? AND t.academic_year=? ORDER BY t.weekday,t.start_time', [institutionId, definition.name, year], await ready()),
+    rows('SELECT t.id,t.section,t.subject,t.weekday,t.start_time AS "startTime",t.end_time AS "endTime",COALESCE(te.name,\'Unassigned\') AS "teacherName",t.teacher_id AS "teacherId" FROM timetable_entries t LEFT JOIN teachers te ON te.id=t.teacher_id AND te.institution_id=t.institution_id WHERE t.institution_id=? AND t.class_name=? AND t.academic_year=? AND t.status<>\'Archived\' ORDER BY t.weekday,t.start_time', [institutionId, definition.name, year], await ready()),
     rows('SELECT id,name,exam_date AS "examDate",section,subject,max_marks AS "maxMarks",passing_marks AS "passingMarks" FROM class_exams WHERE institution_id=? AND class_name=? AND academic_year=? ORDER BY exam_date DESC', [institutionId, definition.name, year], await ready()),
     rows('SELECT r.id,r.exam_id AS "examId",r.student_id AS "studentId",s.name AS "studentName",e.subject,r.marks,r.grade,r.status FROM class_results r JOIN students s ON s.id=r.student_id AND s.institution_id=r.institution_id JOIN class_exams e ON e.id=r.exam_id AND e.institution_id=r.institution_id WHERE r.institution_id=? AND e.class_name=? AND e.academic_year=? ORDER BY e.exam_date DESC,s.name', [institutionId, definition.name, year], await ready()),
   ]);
@@ -3623,7 +3656,7 @@ export async function timetableContext(institutionId:string,className:string,sec
   const target=await row<{id:string}>('SELECT id FROM classes WHERE institution_id=? AND name=? AND section=? AND academic_year=? AND status=?',[institutionId,className,section,academicYear,"Active"],db);
   if(!target)throw new Error("Choose an active class and section for this academic year.");
   const teachers=(await listTeachers(institutionId)).filter(item=>item.status==="Active"&&parseTeacherClasses(item.classes).includes(className)&&item.subject.trim());
-  const existing=await rows<{id:string;weekday:number;startTime:string;endTime:string;subject:string;teacherId:string|null;generated:boolean;className:string;section:string}>('SELECT id,weekday,start_time AS "startTime",end_time AS "endTime",subject,teacher_id AS "teacherId",generated,class_name AS "className",section FROM timetable_entries WHERE institution_id=? AND academic_year=?',[institutionId,academicYear],db);
+  const existing=await rows<{id:string;weekday:number;startTime:string;endTime:string;subject:string;teacherId:string|null;generated:boolean;className:string;section:string}>('SELECT id,weekday,start_time AS "startTime",end_time AS "endTime",subject,teacher_id AS "teacherId",generated,class_name AS "className",section FROM timetable_entries WHERE institution_id=? AND academic_year=? AND status<>\'Archived\'',[institutionId,academicYear],db);
   return {teachers,existing};
 }
 
@@ -3656,8 +3689,9 @@ export async function previewWeeklyTimetable(institutionId:string,className:stri
 export async function applyWeeklyTimetable(institutionId:string,userId:string,className:string,section:string,academicYear:string){
   const preview=await previewWeeklyTimetable(institutionId,className,section,academicYear),db=await ready();
   await db.begin(async tx=>{
-    await run('DELETE FROM timetable_entries WHERE institution_id=? AND class_name=? AND section=? AND academic_year=? AND generated=?',[institutionId,className,section,academicYear,true],tx);
-    for(const item of preview.entries)await run('INSERT INTO timetable_entries(id,institution_id,class_name,section,academic_year,subject,teacher_id,weekday,start_time,end_time,generated)VALUES(?,?,?,?,?,?,?,?,?,?,?)',[randomUUID(),institutionId,className,section,academicYear,item.subject,item.teacherId,item.weekday,item.startTime,item.endTime,true],tx);
+    await run("UPDATE timetable_entries SET status='Draft' WHERE institution_id=? AND class_name=? AND section=? AND academic_year=? AND status<>'Archived'",[institutionId,className,section,academicYear],tx);
+    await run("UPDATE timetable_entries SET status='Archived' WHERE institution_id=? AND class_name=? AND section=? AND academic_year=? AND generated=TRUE AND status<>'Archived'",[institutionId,className,section,academicYear],tx);
+    for(const item of preview.entries)await run("INSERT INTO timetable_entries(id,institution_id,class_name,section,academic_year,subject,teacher_id,weekday,start_time,end_time,generated,status)VALUES(?,?,?,?,?,?,?,?,?,?,TRUE,'Draft')",[randomUUID(),institutionId,className,section,academicYear,item.subject,item.teacherId,item.weekday,item.startTime,item.endTime],tx);
     await audit(institutionId,userId,"Weekly Timetable Generated","Timetable",undefined,{className,section,academicYear,periods:preview.entries.length,settings:preview.settings},tx);
   });
   return preview;
@@ -3737,7 +3771,7 @@ export async function schoolSalaryData(institutionId:string,filters:{search?:str
 }
 
 export async function assignClassTeacher(institutionId:string,userId:string,classId:string,teacher:string){const db=await ready(),target=await row<{id:string;academicYear:string;name:string;section:string}>('SELECT id,academic_year AS "academicYear",name,section FROM classes WHERE id=? AND institution_id=? AND status=\'Active\'',[classId,institutionId],db);if(!target)throw new Error("Class section not found.");if(teacher){const exists=await row<{name:string;section:string}>('SELECT name,section FROM classes WHERE institution_id=? AND academic_year=? AND teacher=? AND id<>? AND status=\'Active\'',[institutionId,target.academicYear,teacher,classId],db);if(exists)throw new Error(`${teacher} is already class teacher for ${exists.name}-${exists.section}. Remove that assignment first.`);const valid=await row<{count:number}>('SELECT COUNT(*)::int count FROM teachers WHERE institution_id=? AND name=? AND status=\'Active\'',[institutionId,teacher],db);if(!valid.count)throw new Error("Choose an active teacher from this school.")}await run('UPDATE classes SET teacher=? WHERE id=? AND institution_id=?',[teacher,classId,institutionId],db);await audit(institutionId,userId,teacher?"Class Teacher Assigned":"Class Teacher Removed","Class",classId,{...target,teacher},db);return true}
-export async function createAdminSalary(adminId:string,input:SalaryInput){const db=await ready(),employees=await adminSalaryEmployees(),employee=employees.find(x=>x.key===input.employeeKey);if(!employee)throw new Error('Employee not found.');const gross=input.basicPaise+input.allowancesPaise+input.bonusPaise+input.overtimePaise+input.otherEarningsPaise,totalDeductions=input.deductionsPaise+input.advanceDeductionPaise+input.otherDeductionsPaise,net=gross-totalDeductions;if(net<0)throw new Error('Deductions cannot exceed gross salary.');return db.begin(async tx=>{const id=randomUUID(),payslip=`PAY-${input.year}-${String(input.month).padStart(2,'0')}-${id.slice(0,8).toUpperCase()}`;await run('INSERT INTO salaries(id,institution_id,employee_key,teacher_id,user_id,employee_name,employee_number,employee_role,department,designation,salary_month,salary_year,basic_paise,allowances_paise,bonus_paise,overtime_paise,other_earnings_paise,gross_paise,deductions_paise,advance_deduction_paise,other_deductions_paise,total_deductions_paise,net_paise,payslip_number,notes,created_by)VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',[id,employee.institutionId,employee.key,employee.teacherId,employee.userId,employee.name,employee.employeeId,employee.role,employee.department,employee.designation,input.month,input.year,input.basicPaise,input.allowancesPaise,input.bonusPaise,input.overtimePaise,input.otherEarningsPaise,gross,input.deductionsPaise,input.advanceDeductionPaise,input.otherDeductionsPaise,totalDeductions,net,payslip,input.notes,adminId],tx);await audit(employee.institutionId,adminId,'Salary Added','Salary',id,{employee:employee.name,month:input.month,year:input.year,netPaise:net},tx);return{id,payslipNumber:payslip}})}
+export async function createAdminSalary(adminId:string,input:SalaryInput){const db=await ready(),employees=await adminSalaryEmployees(),employee=employees.find(x=>x.key===input.employeeKey);if(!employee)throw new Error('Employee not found.');const amounts=calculatePayrollAmounts(input),gross=amounts.grossPaise,totalDeductions=amounts.totalDeductionsPaise,net=amounts.netPaise;return db.begin(async tx=>{const id=randomUUID(),payslip=`PAY-${input.year}-${String(input.month).padStart(2,'0')}-${id.slice(0,8).toUpperCase()}`;await run('INSERT INTO salaries(id,institution_id,employee_key,teacher_id,user_id,employee_name,employee_number,employee_role,department,designation,salary_month,salary_year,basic_paise,allowances_paise,bonus_paise,overtime_paise,other_earnings_paise,gross_paise,deductions_paise,advance_deduction_paise,other_deductions_paise,total_deductions_paise,net_paise,payslip_number,notes,created_by)VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',[id,employee.institutionId,employee.key,employee.teacherId,employee.userId,employee.name,employee.employeeId,employee.role,employee.department,employee.designation,input.month,input.year,input.basicPaise,input.allowancesPaise,input.bonusPaise,input.overtimePaise,input.otherEarningsPaise,gross,input.deductionsPaise,input.advanceDeductionPaise,input.otherDeductionsPaise,totalDeductions,net,payslip,input.notes,adminId],tx);await audit(employee.institutionId,adminId,'Salary Added','Salary',id,{employee:employee.name,month:input.month,year:input.year,netPaise:net},tx);return{id,payslipNumber:payslip}})}
 export async function updateAdminSalaryPayment(adminId:string,institutionId:string,id:string,input:{amountPaise:number;paymentDate:string;paymentMethod:string;paymentReference:string;paymentNotes:string;requestId:string}){const db=await ready();return db.begin(async tx=>{const repeated=await row<{transactionId:string}>('SELECT account_transaction_id AS "transactionId" FROM salary_payment_events WHERE institution_id=? AND request_id=?',[institutionId,input.requestId],tx);if(repeated){const item=await row<{status:string;reference:string}>('SELECT payment_status AS status,payment_reference AS reference FROM salaries WHERE id=? AND institution_id=?',[id,institutionId],tx);return{success:true,salaryPaymentId:id,transactionId:repeated.transactionId,reference:item?.reference||'',amount:input.amountPaise,paymentMethod:input.paymentMethod,status:item?.status||'',idempotent:true}}
 const salary=await row<{netPaise:number;paidPaise:number;employeeName:string;salaryYear:number;existingReference:string}>(`SELECT net_paise AS "netPaise",paid_paise AS "paidPaise",employee_name AS "employeeName",salary_year AS "salaryYear",payment_reference AS "existingReference" FROM salaries WHERE id=? AND institution_id=? FOR UPDATE`,[id,institutionId],tx);if(!salary)throw new Error('Salary record not found.');const total=salary.paidPaise+input.amountPaise;if(input.amountPaise<=0||total>salary.netPaise)throw new Error('Payment must be greater than zero and cannot exceed the remaining salary.');const status=total===salary.netPaise?'Paid':'Partially Paid',reference=salary.existingReference||input.paymentReference.trim()||`SAL-${salary.salaryYear}-${id.slice(0,8).toUpperCase()}`,academicYear=`${Number(input.paymentDate.slice(0,4))-(Number(input.paymentDate.slice(5,7))<4?1:0)}-${Number(input.paymentDate.slice(0,4))+(Number(input.paymentDate.slice(5,7))<4?0:1)}`;await run('UPDATE salaries SET payment_status=?,paid_paise=?,payment_date=?,payment_method=?,payment_reference=?,payment_notes=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND institution_id=?',[status,total,input.paymentDate,input.paymentMethod,reference,input.paymentNotes,id,institutionId],tx);await run("INSERT INTO account_transactions(id,institution_id,academic_year,transaction_type,category,amount_paise,transaction_date,description,payment_method,reference_number,source_type,source_id,status,notes,created_by)VALUES(?,?,?,'expense','Staff Salaries',?,?,?,?,?,'salary_payment',?,'Active',?,?) ON CONFLICT(institution_id,source_type,source_id) WHERE source_id IS NOT NULL DO UPDATE SET academic_year=EXCLUDED.academic_year,category='Staff Salaries',amount_paise=EXCLUDED.amount_paise,transaction_date=EXCLUDED.transaction_date,description=EXCLUDED.description,payment_method=EXCLUDED.payment_method,reference_number=EXCLUDED.reference_number,status='Active',notes=EXCLUDED.notes,updated_at=CURRENT_TIMESTAMP",[randomUUID(),institutionId,academicYear,total,input.paymentDate,`Salary payment - ${salary.employeeName}`,input.paymentMethod,reference,id,input.paymentNotes,adminId],tx);const ledger=await row<{id:string}>('SELECT id FROM account_transactions WHERE institution_id=? AND source_type=? AND source_id=?',[institutionId,'salary_payment',id],tx);await run('INSERT INTO salary_payment_events(id,institution_id,salary_id,request_id,amount_paise,account_transaction_id,created_by)VALUES(?,?,?,?,?,?,?)',[randomUUID(),institutionId,id,input.requestId,input.amountPaise,ledger.id,adminId],tx);await audit(institutionId,adminId,'Salary Payment Recorded','Salary',id,{amountPaise:input.amountPaise,totalPaidPaise:total,paymentMethod:input.paymentMethod,reference,transactionId:ledger.id},tx);return{success:true,salaryPaymentId:id,transactionId:ledger.id,reference,amount:input.amountPaise,paymentMethod:input.paymentMethod,status,idempotent:false}})}
 
@@ -3750,7 +3784,7 @@ const n=(value:unknown)=>Number(value||0);
 export async function adminOverview(range:AdminRange={}){
  const db=await ready(),today=new Date().toISOString().slice(0,10),month=today.slice(0,7),year=today.slice(0,4),to=range.to||today,from=range.from||new Date(Date.now()-29*864e5).toISOString().slice(0,10),span=Math.max(1,Math.round((new Date(to).getTime()-new Date(from).getTime())/864e5)+1),previousTo=new Date(new Date(from).getTime()-864e5).toISOString().slice(0,10),previousFrom=new Date(new Date(from).getTime()-span*864e5).toISOString().slice(0,10);
  const nowIso=new Date().toISOString(),in7dIso=new Date(Date.now()+7*864e5).toISOString(),in15dIso=new Date(Date.now()+15*864e5).toISOString(),in30dIso=new Date(Date.now()+30*864e5).toISOString();
- const [users,schools,subs,subscriptionRevenue,paymentStates,growth,revenueTrend,recent,periodMetrics,recentSchools,platformStats,expiringStats,allTimeRevenue,trialSchoolsCount]=await Promise.all([
+ const [users,schools,subs,subscriptionRevenue,paymentStates,growth,revenueTrend,recent,periodMetrics,recentSchools,platformStats,expiringStats,allTimeRevenue,trialSchoolsCount,addonStats]=await Promise.all([
   row<Record<string,number>>("SELECT COUNT(*)::int total,COALESCE(SUM(CASE WHEN status='Active' THEN 1 ELSE 0 END),0)::int active,COALESCE(SUM(CASE WHEN status='Inactive' THEN 1 ELSE 0 END),0)::int inactive,COALESCE(SUM(CASE WHEN status='Suspended' THEN 1 ELSE 0 END),0)::int suspended,COALESCE(SUM(CASE WHEN status='Pending' THEN 1 ELSE 0 END),0)::int pending,COALESCE(SUM(CASE WHEN SUBSTRING(created_at::text,1,10)=? THEN 1 ELSE 0 END),0)::int \"today\",COALESCE(SUM(CASE WHEN SUBSTRING(created_at::text,1,7)=? THEN 1 ELSE 0 END),0)::int \"month\" FROM users WHERE role<>'SUPER_ADMIN'",[today,month],db),
   row<Record<string,number>>("SELECT COUNT(*)::int total,COALESCE(SUM(CASE WHEN status='Active' THEN 1 ELSE 0 END),0)::int active,COALESCE(SUM(CASE WHEN status='Inactive' THEN 1 ELSE 0 END),0)::int inactive,COALESCE(SUM(CASE WHEN status='Suspended' THEN 1 ELSE 0 END),0)::int suspended,COALESCE(SUM(CASE WHEN status='Pending' THEN 1 ELSE 0 END),0)::int pending,COALESCE(SUM(CASE WHEN SUBSTRING(created_at::text,1,7)=? THEN 1 ELSE 0 END),0)::int \"month\" FROM institutions i WHERE NOT EXISTS(SELECT 1 FROM users owner WHERE owner.institution_id=i.id AND owner.role='SUPER_ADMIN')",[month],db),
   row<Record<string,number>>("SELECT COALESCE(SUM(CASE WHEN status='ACTIVE' AND expiry_date>CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)::int paid,COALESCE(SUM(CASE WHEN status='PENDING' THEN 1 ELSE 0 END),0)::int trial,COALESCE(SUM(CASE WHEN status='EXPIRED' OR expiry_date<=CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)::int expired FROM subscriptions",[],db),
@@ -3764,7 +3798,8 @@ export async function adminOverview(range:AdminRange={}){
   row<{totalStudents:number;totalTeachers:number;totalSchoolAdmins:number}>("SELECT (SELECT COUNT(*)::int FROM students WHERE status<>'Deleted') AS \"totalStudents\",(SELECT COUNT(*)::int FROM teachers WHERE status='Active') AS \"totalTeachers\",(SELECT COUNT(*)::int FROM users WHERE role='SCHOOL_ADMIN' AND status='Active') AS \"totalSchoolAdmins\"",[],db),
   row<{expiring7d:number;expiring15d:number;expiring30d:number}>("SELECT (SELECT COUNT(*)::int FROM subscriptions WHERE status='ACTIVE' AND expiry_date>? AND expiry_date<=?) AS \"expiring7d\",(SELECT COUNT(*)::int FROM subscriptions WHERE status='ACTIVE' AND expiry_date>? AND expiry_date<=?) AS \"expiring15d\",(SELECT COUNT(*)::int FROM subscriptions WHERE status='ACTIVE' AND expiry_date>? AND expiry_date<=?) AS \"expiring30d\"",[nowIso,in7dIso,nowIso,in15dIso,nowIso,in30dIso],db),
   row<{total:number}>("SELECT COALESCE(SUM(amount),0) total FROM subscription_payments WHERE status='SUCCESS'",[],db),
-  row<{trial:number}>("SELECT COUNT(*)::int trial FROM institutions i WHERE NOT EXISTS(SELECT 1 FROM users owner WHERE owner.institution_id=i.id AND owner.role='SUPER_ADMIN') AND (i.status='Pending' OR EXISTS(SELECT 1 FROM subscriptions s WHERE s.institution_id=i.id AND (s.status='PENDING' OR s.payment_status<>'Paid')))",[],db)
+  row<{trial:number}>("SELECT COUNT(*)::int trial FROM institutions i WHERE NOT EXISTS(SELECT 1 FROM users owner WHERE owner.institution_id=i.id AND owner.role='SUPER_ADMIN') AND (i.status='Pending' OR EXISTS(SELECT 1 FROM subscriptions s WHERE s.institution_id=i.id AND (s.status='PENDING' OR s.payment_status<>'Paid')))",[],db),
+  row<{revenue:number;active:number;pending:number;expired:number}>("SELECT COALESCE(SUM(CASE WHEN payment_status='Paid' AND razorpay_payment_id IS NOT NULL THEN amount_paid ELSE 0 END),0) revenue,COUNT(*) FILTER(WHERE status='ACTIVE' AND payment_status='Paid' AND expiry_date>CURRENT_TIMESTAMP)::int active,COUNT(*) FILTER(WHERE payment_status='Pending')::int pending,COUNT(*) FILTER(WHERE payment_status='Paid' AND expiry_date<=CURRENT_TIMESTAMP)::int expired FROM whatsapp_addon_subscriptions",[],db)
  ]);
  const weekStart=new Date(Date.now()-6*864e5).toISOString().slice(0,10),periodRevenue=await row<Record<string,number>>("SELECT COALESCE(SUM(CASE WHEN payment_date=? THEN amount ELSE 0 END),0) \"today\",COALESCE(SUM(CASE WHEN payment_date>=? THEN amount ELSE 0 END),0) \"week\",COALESCE(SUM(CASE WHEN SUBSTRING(payment_date,1,7)=? THEN amount ELSE 0 END),0) \"month\",COALESCE(SUM(CASE WHEN SUBSTRING(payment_date,1,4)=? THEN amount ELSE 0 END),0) \"year\" FROM subscription_payments WHERE status='SUCCESS'",[today,weekStart,month,year],db),totalRevenue=n(allTimeRevenue?.total),refundedAmount=n(paymentStates.refundedAmount),paymentAttempts=n(paymentStates.success)+n(paymentStates.pending)+n(paymentStates.failed)+n(paymentStates.refunded),schoolCount=n(schools.total);
  const change=(current:number,previous:number)=>previous?Math.round((current-previous)/previous*1000)/10:current?100:0;
@@ -3798,6 +3833,11 @@ export async function adminOverview(range:AdminRange={}){
   finance:{
    totalRevenue,
    subscriptionRevenue:totalRevenue,
+   whatsappAddonRevenue:n(addonStats?.revenue),
+   grossPlatformRevenue:totalRevenue+n(addonStats?.revenue),
+   activeWhatsAppAddons:n(addonStats?.active),
+   pendingWhatsAppAddons:n(addonStats?.pending),
+   expiredWhatsAppAddons:n(addonStats?.expired),
    periodRevenue:n(subscriptionRevenue.total),
    refundedAmount,
    totalPayments:paymentAttempts,
@@ -3883,20 +3923,20 @@ export async function adminSubscriptions(){
   s.currency,
   s.payment_status AS \"paymentStatus\",
   s.razorpay_payment_id AS \"paymentReference\",
-  CASE 
-    WHEN s.status IN ('CANCELLED','SUSPENDED','FAILED') THEN s.status 
-    WHEN s.payment_status='Failed' THEN 'PAYMENT FAILED' 
-    WHEN s.payment_status<>'Paid' THEN 'PENDING' 
-    WHEN s.expiry_date<=CURRENT_TIMESTAMP THEN 'EXPIRED' 
-    ELSE 'ACTIVE' 
+  CASE
+    WHEN s.status IN ('CANCELLED','SUSPENDED','FAILED') THEN s.status
+    WHEN s.payment_status='Failed' THEN 'PAYMENT FAILED'
+    WHEN s.payment_status<>'Paid' THEN 'PENDING'
+    WHEN s.expiry_date<=CURRENT_TIMESTAMP THEN 'EXPIRED'
+    ELSE 'ACTIVE'
   END AS status,
   s.activation_date::text AS \"activationDate\",
   s.expiry_date::text AS \"expiryDate\",
   s.renewal_date::text AS \"renewalDate\",
   s.created_at::text AS \"createdAt\"
-  FROM subscriptions s 
-  JOIN institutions i ON i.id=s.institution_id 
-  JOIN subscription_plans sp ON sp.id=s.plan_id 
+  FROM subscriptions s
+  JOIN institutions i ON i.id=s.institution_id
+  JOIN subscription_plans sp ON sp.id=s.plan_id
   ORDER BY s.created_at DESC`,[],await ready());
 
  const now = Date.now();
@@ -3931,7 +3971,7 @@ export async function adminManageSubscription(adminId:string,id:string,action:"e
 }
 export async function adminAuditLogs(limit=100){return rows(`SELECT a.id,a.action,a.entity,a.entity_id AS \"entityId\",a.details,a.created_at::text AS \"createdAt\",u.name AS \"userName\",u.email,i.name AS \"schoolName\" FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id LEFT JOIN institutions i ON i.id=a.institution_id ORDER BY a.created_at DESC LIMIT ?`,[Math.min(limit,500)],await ready())}
 export async function adminSetUserStatus(adminId:string,id:string,status:"Active"|"Inactive"|"Suspended"){if(adminId===id)throw new Error("The private admin account cannot be disabled");const db=await ready(),target=await row<{institutionId:string}>("SELECT institution_id AS \"institutionId\" FROM users WHERE id=?",[id],db);if(!target)throw new Error("User not found");await run("UPDATE users SET status=? WHERE id=?",[status,id],db);await audit(target.institutionId,adminId,`User ${status}`,"User",id,{status},db)}
-export async function adminSetSchoolStatus(adminId:string,id:string,status:"Active"|"Inactive"|"Suspended"){const db=await ready(),target=await row<{id:string}>("SELECT id FROM institutions WHERE id=?",[id],db);if(!target)throw new Error("School not found");await run("UPDATE institutions SET status=? WHERE id=?",[status,id],db);await audit(id,adminId,`School ${status}`,"Institution",id,{status},db)}
+export async function adminSetSchoolStatus(adminId:string,id:string,status:"Active"|"Inactive"|"Suspended",reason:string){const normalizedReason=reason.trim();if(normalizedReason.length<5||normalizedReason.length>500)throw new Error("A reason of 5–500 characters is required for school status changes.");const db=await ready(),target=await row<{id:string;status:string}>("SELECT id,status FROM institutions WHERE id=?",[id],db);if(!target)throw new Error("School not found");await run("UPDATE institutions SET status=? WHERE id=?",[status,id],db);await audit(id,adminId,`School ${status}`,"Institution",id,{before:{status:target.status},after:{status},reason:normalizedReason},db)}
 export async function getAdminSettings(){const db=await ready();await run("INSERT INTO admin_settings(id)VALUES('global') ON CONFLICT(id) DO NOTHING",[],db);return row<Record<string,unknown>>('SELECT application_name AS "applicationName",support_email AS "supportEmail",currency,timezone,date_format AS "dateFormat",session_timeout_minutes AS "sessionTimeoutMinutes",subscription_warning_days AS "subscriptionWarningDays",subscription_notifications_enabled AS "subscriptionNotificationsEnabled",in_app_notifications_enabled AS "inAppNotificationsEnabled",email_notifications_enabled AS "emailNotificationsEnabled",subscription_grace_days AS "subscriptionGraceDays",updated_at::text AS "updatedAt" FROM admin_settings WHERE id=\'global\'',[],db)}
 export async function saveAdminSettings(adminId:string,input:{applicationName:string;supportEmail:string;currency:string;timezone:string;dateFormat:string;sessionTimeoutMinutes:number;subscriptionWarningDays:string;subscriptionNotificationsEnabled:boolean;inAppNotificationsEnabled:boolean;emailNotificationsEnabled:boolean;subscriptionGraceDays:number}){const db=await ready();await run("INSERT INTO admin_settings(id,application_name,support_email,currency,timezone,date_format,session_timeout_minutes,subscription_warning_days,subscription_notifications_enabled,in_app_notifications_enabled,email_notifications_enabled,subscription_grace_days,updated_by)VALUES('global',?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET application_name=EXCLUDED.application_name,support_email=EXCLUDED.support_email,currency=EXCLUDED.currency,timezone=EXCLUDED.timezone,date_format=EXCLUDED.date_format,session_timeout_minutes=EXCLUDED.session_timeout_minutes,subscription_warning_days=EXCLUDED.subscription_warning_days,subscription_notifications_enabled=EXCLUDED.subscription_notifications_enabled,in_app_notifications_enabled=EXCLUDED.in_app_notifications_enabled,email_notifications_enabled=EXCLUDED.email_notifications_enabled,subscription_grace_days=EXCLUDED.subscription_grace_days,updated_by=EXCLUDED.updated_by,updated_at=CURRENT_TIMESTAMP",[input.applicationName,input.supportEmail,input.currency,input.timezone,input.dateFormat,input.sessionTimeoutMinutes,input.subscriptionWarningDays,input.subscriptionNotificationsEnabled,input.inAppNotificationsEnabled,input.emailNotificationsEnabled,input.subscriptionGraceDays,adminId],db);const admin=await row<{institutionId:string}>("SELECT institution_id AS \"institutionId\" FROM users WHERE id=?",[adminId],db);if(admin)await audit(admin.institutionId,adminId,"Admin Settings Updated","AdminSettings","global",{subscriptionWarningDays:input.subscriptionWarningDays,subscriptionNotificationsEnabled:input.subscriptionNotificationsEnabled},db);return getAdminSettings()}
 
@@ -4038,16 +4078,200 @@ export async function staffAttendanceData(institutionId:string,date:string,month
  return {date,month,settings,people,daily,summary,monthly};
 }
 
-export type TimetableEntryRecord={id:string;className:string;section:string;academicYear:string;weekday:number;startTime:string;endTime:string;subject:string;teacherId:string|null;teacherName:string;generated:boolean};
-export async function listTimetableEntries(institutionId:string,className:string,section:string,academicYear:string){return rows<TimetableEntryRecord>('SELECT t.id,t.class_name AS "className",t.section,t.academic_year AS "academicYear",t.weekday,t.start_time AS "startTime",t.end_time AS "endTime",t.subject,t.teacher_id AS "teacherId",COALESCE(te.name,\'Unassigned\') AS "teacherName",t.generated FROM timetable_entries t LEFT JOIN teachers te ON te.id=t.teacher_id AND te.institution_id=t.institution_id WHERE t.institution_id=? AND t.class_name=? AND t.section=? AND t.academic_year=? ORDER BY t.weekday,t.start_time',[institutionId,className,section,academicYear],await ready())}
+export type TimetableEntryRecord={id:string;className:string;section:string;academicYear:string;weekday:number;startTime:string;endTime:string;subject:string;teacherId:string|null;teacherName:string;generated:boolean;status:"Draft"|"Published"|"Archived"};
+export async function listTimetableEntries(institutionId:string,className:string,section:string,academicYear:string){return rows<TimetableEntryRecord>('SELECT t.id,t.class_name AS "className",t.section,t.academic_year AS "academicYear",t.weekday,t.start_time AS "startTime",t.end_time AS "endTime",t.subject,t.teacher_id AS "teacherId",COALESCE(te.name,\'Unassigned\') AS "teacherName",t.generated,t.status FROM timetable_entries t LEFT JOIN teachers te ON te.id=t.teacher_id AND te.institution_id=t.institution_id WHERE t.institution_id=? AND t.class_name=? AND t.section=? AND t.academic_year=? AND t.status<>\'Archived\' ORDER BY t.weekday,t.start_time',[institutionId,className,section,academicYear],await ready())}
 export async function updateTimetableEntry(institutionId:string,userId:string,id:string,input:{className:string;section:string;academicYear:string;weekday:number;startTime:string;endTime:string;subject:string;teacherId?:string|null}){
- const db=await ready();timeMinutes(input.startTime);timeMinutes(input.endTime);if(timeMinutes(input.endTime)<=timeMinutes(input.startTime))throw new Error("End time must be after start time.");if(input.weekday<1||input.weekday>6)throw new Error("Choose Monday through Saturday.");
+ const db=await ready();if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(input.startTime)||!/^([01]\d|2[0-3]):[0-5]\d$/.test(input.endTime))throw new Error("Enter valid 24-hour start and end times.");timeMinutes(input.startTime);timeMinutes(input.endTime);if(timeMinutes(input.endTime)<=timeMinutes(input.startTime))throw new Error("End time must be after start time.");if(input.weekday<1||input.weekday>6)throw new Error("Choose Monday through Saturday.");
  const target=await row<{count:number}>("SELECT COUNT(*)::int count FROM institution_classes c JOIN institution_sections s ON s.class_id=c.id WHERE c.institution_id=? AND c.name=? AND c.status='Active' AND s.name=? AND s.status='Active'",[institutionId,input.className,input.section],db);if(!target.count)throw new Error("Choose a configured class and section.");
  if(input.teacherId&&!await row<{id:string}>("SELECT id FROM teachers WHERE id=? AND institution_id=? AND status='Active'",[input.teacherId,institutionId],db))throw new Error("Choose an active teacher from this school.");
- const conflict=await row<{id:string}>("SELECT id FROM timetable_entries WHERE institution_id=? AND academic_year=? AND weekday=? AND id<>? AND ((class_name=? AND section=?) OR (? IS NOT NULL AND teacher_id=?)) AND start_time<? AND end_time>? LIMIT 1",[institutionId,input.academicYear,input.weekday,id,input.className,input.section,input.teacherId||null,input.teacherId||null,input.endTime,input.startTime],db);if(conflict)throw new Error("This period conflicts with another class or teacher entry.");
- const changed=await run("UPDATE timetable_entries SET class_name=?,section=?,academic_year=?,weekday=?,start_time=?,end_time=?,subject=?,teacher_id=?,generated=FALSE WHERE id=? AND institution_id=?",[input.className,input.section,input.academicYear,input.weekday,input.startTime,input.endTime,input.subject,input.teacherId||null,id,institutionId],db);if(!changed)throw new Error("Timetable entry not found.");await audit(institutionId,userId,"Timetable Entry Updated","Timetable",id,input,db);return listTimetableEntries(institutionId,input.className,input.section,input.academicYear);
+ const conflict=await row<{id:string}>("SELECT id FROM timetable_entries WHERE institution_id=? AND academic_year=? AND weekday=? AND status<>'Archived' AND id<>? AND ((class_name=? AND section=?) OR (? IS NOT NULL AND teacher_id=?)) AND start_time<? AND end_time>? LIMIT 1",[institutionId,input.academicYear,input.weekday,id,input.className,input.section,input.teacherId||null,input.teacherId||null,input.endTime,input.startTime],db);if(conflict)throw new Error("This period conflicts with another class or teacher entry.");
+ const current=await row<{className:string;section:string;academicYear:string}>("SELECT class_name AS \"className\",section,academic_year AS \"academicYear\" FROM timetable_entries WHERE id=? AND institution_id=? AND status<>'Archived'",[id,institutionId],db);if(!current)throw new Error("Timetable entry not found.");
+ await db.begin(async tx=>{await run("UPDATE timetable_entries SET status='Draft' WHERE institution_id=? AND class_name=? AND section=? AND academic_year=? AND status<>'Archived'",[institutionId,current.className,current.section,current.academicYear],tx);await run("UPDATE timetable_entries SET status='Draft' WHERE institution_id=? AND class_name=? AND section=? AND academic_year=? AND status<>'Archived'",[institutionId,input.className,input.section,input.academicYear],tx);const changed=await run("UPDATE timetable_entries SET class_name=?,section=?,academic_year=?,weekday=?,start_time=?,end_time=?,subject=?,teacher_id=?,generated=FALSE,status='Draft' WHERE id=? AND institution_id=?",[input.className,input.section,input.academicYear,input.weekday,input.startTime,input.endTime,input.subject,input.teacherId||null,id,institutionId],tx);if(!changed)throw new Error("Timetable entry not found.");await audit(institutionId,userId,"Timetable Entry Updated","Timetable",id,input,tx)});return listTimetableEntries(institutionId,input.className,input.section,input.academicYear);
 }
-export async function deleteTimetableEntry(institutionId:string,userId:string,id:string){const db=await ready(),item=await row<{className:string;section:string;academicYear:string}>("SELECT class_name AS \"className\",section,academic_year AS \"academicYear\" FROM timetable_entries WHERE id=? AND institution_id=?",[id,institutionId],db);if(!item)throw new Error("Timetable entry not found.");await run("DELETE FROM timetable_entries WHERE id=? AND institution_id=?",[id,institutionId],db);await audit(institutionId,userId,"Timetable Entry Deleted","Timetable",id,item,db);return true}
+export async function createTimetableEntry(institutionId:string,userId:string,input:{className:string;section:string;academicYear:string;weekday:number;startTime:string;endTime:string;subject:string;teacherId?:string|null}){
+ const db=await ready();if(!/^([01]\\d|2[0-3]):[0-5]\\d$/.test(input.startTime)||!/^([01]\\d|2[0-3]):[0-5]\\d$/.test(input.endTime))throw new Error("Enter valid 24-hour start and end times.");timeMinutes(input.startTime);timeMinutes(input.endTime);if(timeMinutes(input.endTime)<=timeMinutes(input.startTime))throw new Error("End time must be after start time.");if(input.weekday<1||input.weekday>6)throw new Error("Choose Monday through Saturday.");
+ const target=await row<{count:number}>("SELECT COUNT(*)::int count FROM institution_classes c JOIN institution_sections s ON s.class_id=c.id WHERE c.institution_id=? AND c.name=? AND c.status='Active' AND s.name=? AND s.status='Active'",[institutionId,input.className,input.section],db);if(!target.count)throw new Error("Choose a configured class and section.");
+ if(input.teacherId&&!await row<{id:string}>("SELECT id FROM teachers WHERE id=? AND institution_id=? AND status='Active'",[input.teacherId,institutionId],db))throw new Error("Choose an active teacher from this school.");
+ const conflict=await row<{id:string}>("SELECT id FROM timetable_entries WHERE institution_id=? AND academic_year=? AND weekday=? AND status<>'Archived' AND ((class_name=? AND section=?) OR (? IS NOT NULL AND teacher_id=?)) AND start_time<? AND end_time>? LIMIT 1",[institutionId,input.academicYear,input.weekday,input.className,input.section,input.teacherId||null,input.teacherId||null,input.endTime,input.startTime],db);if(conflict)throw new Error("This period conflicts with another class or teacher entry.");
+ const id=randomUUID();await db.begin(async tx=>{await run("UPDATE timetable_entries SET status='Draft' WHERE institution_id=? AND class_name=? AND section=? AND academic_year=? AND status<>'Archived'",[institutionId,input.className,input.section,input.academicYear],tx);await run("INSERT INTO timetable_entries(id,institution_id,class_name,section,academic_year,weekday,start_time,end_time,subject,teacher_id,generated,status) VALUES(?,?,?,?,?,?,?,?,?,?,FALSE,'Draft')",[id,institutionId,input.className,input.section,input.academicYear,input.weekday,input.startTime,input.endTime,input.subject,input.teacherId||null],tx);await audit(institutionId,userId,"Timetable Entry Added","Timetable",id,input,tx)});return listTimetableEntries(institutionId,input.className,input.section,input.academicYear);
+}
+export async function deleteTimetableEntry(institutionId:string,userId:string,id:string){const db=await ready(),item=await row<{className:string;section:string;academicYear:string}>("SELECT class_name AS \"className\",section,academic_year AS \"academicYear\" FROM timetable_entries WHERE id=? AND institution_id=? AND status<>'Archived'",[id,institutionId],db);if(!item)throw new Error("Timetable entry not found.");await db.begin(async tx=>{await run("UPDATE timetable_entries SET status='Draft' WHERE institution_id=? AND class_name=? AND section=? AND academic_year=? AND status<>'Archived'",[institutionId,item.className,item.section,item.academicYear],tx);await run("UPDATE timetable_entries SET status='Archived' WHERE id=? AND institution_id=?",[id,institutionId],tx);await audit(institutionId,userId,"Timetable Entry Archived","Timetable",id,item,tx)});return true}
+export async function publishTimetable(institutionId:string,userId:string,className:string,section:string,academicYear:string){
+ const db=await ready(),entries=await rows<{id:string;weekday:number;startTime:string;endTime:string;teacherId:string|null}>("SELECT id,weekday,start_time AS \"startTime\",end_time AS \"endTime\",teacher_id AS \"teacherId\" FROM timetable_entries WHERE institution_id=? AND class_name=? AND section=? AND academic_year=? AND status<>'Archived'",[institutionId,className,section,academicYear],db);
+ if(!entries.length)throw new Error("Add at least one period before publishing the timetable.");
+ for(const item of entries){if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(item.startTime)||!/^([01]\d|2[0-3]):[0-5]\d$/.test(item.endTime)||timeMinutes(item.endTime)<=timeMinutes(item.startTime))throw new Error("Every timetable period must have valid start and end times.")}
+ const all=await rows<{id:string;className:string;section:string;weekday:number;startTime:string;endTime:string;teacherId:string|null}>("SELECT id,class_name AS \"className\",section,weekday,start_time AS \"startTime\",end_time AS \"endTime\",teacher_id AS \"teacherId\" FROM timetable_entries WHERE institution_id=? AND academic_year=? AND status<>'Archived'",[institutionId,academicYear],db),mins=(time:string)=>timeMinutes(time);
+ for(let i=0;i<all.length;i++)for(let j=i+1;j<all.length;j++){const a=all[i],b=all[j];if(a.weekday!==b.weekday||Math.max(mins(a.startTime),mins(b.startTime))>=Math.min(mins(a.endTime),mins(b.endTime)))continue;const sameTarget=(a.className===className&&a.section===section)||(b.className===className&&b.section===section);if(sameTarget&&a.className===b.className&&a.section===b.section)throw new Error("This timetable has overlapping periods for the selected class.");if(a.teacherId&&a.teacherId===b.teacherId)throw new Error("A teacher is assigned to overlapping periods. Resolve the conflict before publishing.")}
+ await db.begin(async tx=>{await run("UPDATE timetable_entries SET status='Published' WHERE institution_id=? AND class_name=? AND section=? AND academic_year=? AND status<>'Archived'",[institutionId,className,section,academicYear],tx);await audit(institutionId,userId,"Timetable Published","Timetable",undefined,{className,section,academicYear,periodCount:entries.length},tx)});
+ return listTimetableEntries(institutionId,className,section,academicYear);
+}
+
+export type SaveClassTimetableInput = {
+  className: string;
+  section: string;
+  academicYear: string;
+  status?: "Draft" | "Published";
+  entries: Array<{
+    id?: string;
+    weekday: number;
+    startTime: string;
+    endTime: string;
+    subject: string;
+    teacherId?: string | null;
+  }>;
+};
+
+export async function saveClassTimetable(institutionId: string, userId: string, input: SaveClassTimetableInput) {
+  const db = await ready();
+  const { className, section, academicYear, entries } = input;
+  const target = await row<{ count: number }>(
+    "SELECT COUNT(*)::int count FROM institution_classes c JOIN institution_sections s ON s.class_id=c.id WHERE c.institution_id=? AND c.name=? AND c.status='Active' AND s.name=? AND s.status='Active'",
+    [institutionId, className, section],
+    db
+  );
+  if (!target.count) throw new Error("Choose a configured class and section.");
+
+  const dayNames = ["", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const timeClock = (t: string) => {
+    try {
+      const [h, m] = t.split(":").map(Number);
+      const suffix = h >= 12 ? "PM" : "AM";
+      const h12 = h % 12 || 12;
+      return `${h12}:${String(m).padStart(2, "0")} ${suffix}`;
+    } catch {
+      return t;
+    }
+  };
+
+  // 1. Basic validation of every period
+  for (const item of entries) {
+    if (!item.subject || !item.subject.trim()) {
+      throw new Error("Every timetable period must have a subject name.");
+    }
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(item.startTime) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(item.endTime)) {
+      throw new Error(`Invalid period time format for '${item.subject}'. Use 24-hour HH:mm time.`);
+    }
+    if (timeMinutes(item.endTime) <= timeMinutes(item.startTime)) {
+      throw new Error(`Period '${item.subject}' has invalid timings: end time (${item.endTime}) must be later than start time (${item.startTime}).`);
+    }
+    if (item.weekday < 1 || item.weekday > 6) {
+      throw new Error(`Period '${item.subject}' must be assigned to Monday through Saturday.`);
+    }
+    if (item.teacherId) {
+      const activeTeacher = await row<{ id: string; name: string }>(
+        "SELECT id, name FROM teachers WHERE id=? AND institution_id=? AND status='Active'",
+        [item.teacherId, institutionId],
+        db
+      );
+      if (!activeTeacher) {
+        throw new Error(`The assigned teacher for '${item.subject}' is not an active teacher in this school.`);
+      }
+    }
+  }
+
+  // 2. Validate internal collisions (within this class and section)
+  for (let i = 0; i < entries.length; i++) {
+    for (let j = i + 1; j < entries.length; j++) {
+      const a = entries[i], b = entries[j];
+      if (a.weekday !== b.weekday) continue;
+      const aStart = timeMinutes(a.startTime), aEnd = timeMinutes(a.endTime);
+      const bStart = timeMinutes(b.startTime), bEnd = timeMinutes(b.endTime);
+      if (Math.max(aStart, bStart) < Math.min(aEnd, bEnd)) {
+        throw new Error(
+          `Timetable conflict: '${a.subject}' (${timeClock(a.startTime)}–${timeClock(a.endTime)}) overlaps with '${b.subject}' (${timeClock(b.startTime)}–${timeClock(b.endTime)}) on ${dayNames[a.weekday]}.`
+        );
+      }
+      if (a.teacherId && b.teacherId && a.teacherId === b.teacherId && Math.max(aStart, bStart) < Math.min(aEnd, bEnd)) {
+        throw new Error(
+          `Timetable conflict: The same teacher is assigned to multiple overlapping periods on ${dayNames[a.weekday]}.`
+        );
+      }
+    }
+  }
+
+  // 3. Validate external collisions (teacher double-booking in other classes of the same school and academic year)
+  const teacherIds = [...new Set(entries.map((e) => e.teacherId).filter(Boolean))] as string[];
+  if (teacherIds.length > 0) {
+    const otherEntries = await rows<{
+      className: string;
+      section: string;
+      weekday: number;
+      startTime: string;
+      endTime: string;
+      teacherId: string;
+      teacherName: string;
+      subject: string;
+    }>(
+      `SELECT t.class_name AS "className", t.section, t.weekday, t.start_time AS "startTime", t.end_time AS "endTime", t.teacher_id AS "teacherId", COALESCE(te.name, 'Teacher') AS "teacherName", t.subject
+       FROM timetable_entries t
+       LEFT JOIN teachers te ON te.id = t.teacher_id AND te.institution_id = t.institution_id
+       WHERE t.institution_id = ?
+         AND t.academic_year = ?
+         AND t.status <> 'Archived'
+         AND NOT (t.class_name = ? AND t.section = ?)
+         AND t.teacher_id IS NOT NULL`,
+      [institutionId, academicYear, className, section],
+      db
+    );
+
+    for (const entry of entries) {
+      if (!entry.teacherId) continue;
+      const eStart = timeMinutes(entry.startTime), eEnd = timeMinutes(entry.endTime);
+      const conflict = otherEntries.find(
+        (other) =>
+          other.teacherId === entry.teacherId &&
+          other.weekday === entry.weekday &&
+          Math.max(eStart, timeMinutes(other.startTime)) < Math.min(eEnd, timeMinutes(other.endTime))
+      );
+      if (conflict) {
+        throw new Error(
+          `Timetable conflict: ${conflict.teacherName} is already assigned to ${conflict.className} ${conflict.section} on ${dayNames[entry.weekday]} from ${timeClock(conflict.startTime)} to ${timeClock(conflict.endTime)}.`
+        );
+      }
+    }
+  }
+
+  // 4. Atomic transaction
+  const targetStatus = input.status || "Published";
+  await db.begin(async (tx) => {
+    await run(
+      "UPDATE timetable_entries SET status='Archived' WHERE institution_id=? AND class_name=? AND section=? AND academic_year=? AND status<>'Archived'",
+      [institutionId, className, section, academicYear],
+      tx
+    );
+
+    for (const entry of entries) {
+      const id = entry.id && /^[0-9a-f-]{36}$/i.test(entry.id) ? entry.id : randomUUID();
+      await run(
+        "INSERT INTO timetable_entries(id, institution_id, class_name, section, academic_year, subject, teacher_id, weekday, start_time, end_time, generated, status) VALUES(?,?,?,?,?,?,?,?,?,?,FALSE,?)",
+        [
+          id,
+          institutionId,
+          className,
+          section,
+          academicYear,
+          entry.subject.trim(),
+          entry.teacherId || null,
+          entry.weekday,
+          entry.startTime,
+          entry.endTime,
+          targetStatus,
+        ],
+        tx
+      );
+    }
+
+    await audit(institutionId, userId, "Timetable Edited", "Timetable", undefined, {
+      className,
+      section,
+      academicYear,
+      periodCount: entries.length,
+      status: targetStatus,
+    }, tx);
+  });
+
+  return listTimetableEntries(institutionId, className, section, academicYear);
+}
 
 export type ManagedExamination={id:string;name:string;academicYear:string;className:string;section:string;startDate:string;endDate:string;publicationDate:string|null;status:string;publishedAt:string|null;publishedBy:string|null};
 export type ManagedSubject={id:string;subject:string;maximumCent:number;passingCent:number;required:boolean};
@@ -4586,11 +4810,36 @@ export async function parentChildFees(institutionId: string, studentId: string) 
   const totalFee = invoices.reduce((acc, curr) => acc + curr.finalAmount, 0);
   const paidFee = payments.filter((p) => p.status === "Success").reduce((acc, curr) => acc + curr.amount, 0);
   const pendingFee = Math.max(0, totalFee - paidFee);
+  const paymentSettings = await getSchoolPaymentSettings(institutionId);
+  const qrPayments = await rows<{
+    id: string;
+    feeId: string;
+    amount: number;
+    utrNumber: string;
+    paymentDate: string;
+    screenshotAssetId: string | null;
+    status: "PENDING" | "VERIFIED" | "REJECTED" | "REFUNDED";
+    rejectionReason: string;
+    notes: string;
+    createdAt: string;
+    verifiedAt: string | null;
+  }>(
+    `SELECT id, fee_id AS "feeId", amount, utr_number AS "utrNumber", payment_date AS "paymentDate",
+            screenshot_asset_id AS "screenshotAssetId", status, rejection_reason AS "rejectionReason",
+            notes, created_at::text AS "createdAt", verified_at::text AS "verifiedAt"
+     FROM school_qr_payments
+     WHERE institution_id = ? AND student_id = ?
+     ORDER BY created_at DESC`,
+    [institutionId, studentId],
+    db
+  );
   return {
     invoices,
     payments,
     receipts,
     summary: { totalFee, paidFee, pendingFee },
+    paymentSettings,
+    qrPayments,
   };
 }
 
@@ -4611,29 +4860,64 @@ export async function getParentChildFeeInvoice(institutionId: string, studentId:
 
 export async function parentChildResults(institutionId: string, studentId: string) {
   const db = await ready();
-  return await rows<{
-    id: string;
-    examId: string;
-    examName: string;
-    subject: string;
-    examDate: string;
-    maxMarks: number;
-    passingMarks: number;
-    marks: number;
-    grade: string;
-    status: string;
-    remarks: string;
-  }>(
-    `SELECT r.id, r.exam_id AS "examId", e.name AS "examName", e.subject, e.exam_date AS "examDate",
-            e.max_marks AS "maxMarks", e.passing_marks AS "passingMarks",
-            r.marks, r.grade, r.status, COALESCE(r.remarks, '') AS remarks
-     FROM class_results r
-     JOIN class_exams e ON e.id = r.exam_id AND e.institution_id = r.institution_id
-     WHERE r.institution_id = ? AND r.student_id = ?
-     ORDER BY e.exam_date DESC, e.subject ASC`,
-    [institutionId, studentId],
-    db
+  const snapshots = await rows<{ snapshot: Record<string, unknown> | string }>(
+    `SELECT s.snapshot
+     FROM result_publication_snapshots s
+     WHERE s.institution_id = ? AND s.version = (
+       SELECT MAX(latest.version) FROM result_publication_snapshots latest
+       WHERE latest.institution_id = s.institution_id AND latest.examination_id = s.examination_id
+     )
+     ORDER BY s.published_at DESC`,
+    [institutionId],
+    db,
   );
+  const results: Array<{
+    id: string; examId: string; examName: string; subject: string; examDate: string;
+    maxMarks: number; passingMarks: number; marks: number; grade: string; status: string; remarks: string;
+  }> = [];
+
+  for (const record of snapshots) {
+    let snapshot: Record<string, unknown>;
+    try {
+      snapshot = typeof record.snapshot === "string" ? JSON.parse(record.snapshot) : record.snapshot;
+    } catch {
+      continue;
+    }
+    const exam = snapshot.exam as { id?: string; name?: string; startDate?: string } | undefined;
+    const students = snapshot.students as Array<{
+      id?: string;
+      subjects?: Array<{ subjectId?: string; subject?: string; maximumCent?: number; passingCent?: number; obtainedCent?: number | null; markStatus?: string | null; remarks?: string }>;
+    }> | undefined;
+    const student = students?.find((item) => item.id === studentId);
+    if (!exam?.id || !student) continue;
+    const settings = snapshot.settings as { gradeBands?: Array<{ minimum: number; grade: string }> } | undefined;
+
+    for (const subject of student.subjects || []) {
+      if (!subject.subjectId) continue;
+      const maximumCent = Number(subject.maximumCent || 0);
+      const passingCent = Number(subject.passingCent || 0);
+      const marksCent = subject.markStatus === "Scored" ? Number(subject.obtainedCent || 0) : 0;
+      const percentage = maximumCent > 0 ? marksCent / maximumCent * 100 : 0;
+      const grade = (settings?.gradeBands || [])
+        .slice()
+        .sort((a, b) => b.minimum - a.minimum)
+        .find((band) => percentage >= band.minimum)?.grade || "—";
+      results.push({
+        id: `${exam.id}:${subject.subjectId}`,
+        examId: exam.id,
+        examName: exam.name || "Examination",
+        subject: subject.subject || "Subject",
+        examDate: exam.startDate || "",
+        maxMarks: maximumCent / 100,
+        passingMarks: passingCent / 100,
+        marks: marksCent / 100,
+        grade,
+        status: subject.markStatus === "Absent" ? "Absent" : subject.markStatus === "Exempt" ? "Exempt" : marksCent >= passingCent ? "Pass" : "Fail",
+        remarks: subject.remarks || "",
+      });
+    }
+  }
+  return results.sort((a, b) => b.examDate.localeCompare(a.examDate) || a.subject.localeCompare(b.subject));
 }
 
 export async function parentChildHomework(institutionId: string, className: string, section: string) {
@@ -4669,7 +4953,7 @@ export async function parentChildTimetable(institutionId: string, className: str
             t.weekday, t.start_time AS "startTime", t.end_time AS "endTime"
      FROM timetable_entries t
      LEFT JOIN teachers tc ON tc.id = t.teacher_id AND tc.institution_id = t.institution_id
-     WHERE t.institution_id = ? AND t.class_name = ? AND (t.section = ? OR t.section = '') AND t.academic_year = ?
+     WHERE t.institution_id = ? AND t.class_name = ? AND (t.section = ? OR t.section = '') AND t.academic_year = ? AND t.status='Published'
      ORDER BY t.weekday ASC, t.start_time ASC`,
     [institutionId, className, section, academicYear],
     db
@@ -5103,28 +5387,27 @@ export async function updateNotificationDeliveryStatus(
   await run(sql, params, db);
 }
 
-export async function acknowledgeNotificationDelivery(deliveryId: string): Promise<boolean> {
+export async function acknowledgeNotificationDelivery(
+  institutionId: string,
+  userId: string,
+  deliveryId: string,
+): Promise<boolean> {
   const db = await ready();
-  const delivery = await row<{ id: string; notificationId: string | null }>(
-    `SELECT id, notification_id AS "notificationId" FROM notification_deliveries WHERE id=?`,
-    [deliveryId],
-    db
-  );
-  if (!delivery) return false;
-
-  await run(
+  const delivery = await row<{ notificationId: string | null }>(
     `UPDATE notification_deliveries
      SET status='DELIVERED', delivered_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
-     WHERE id=?`,
-    [deliveryId],
-    db
+     WHERE id=? AND institution_id=? AND user_id=? AND channel='FCM' AND status='SENT'
+     RETURNING notification_id AS "notificationId"`,
+    [deliveryId, institutionId, userId],
+    db,
   );
-
+  if (!delivery) return false;
   if (delivery.notificationId) {
     await run(
-      `UPDATE notifications SET delivery_status='DELIVERED' WHERE id=?`,
-      [delivery.notificationId],
-      db
+      `UPDATE notifications SET delivery_status='DELIVERED'
+       WHERE id=? AND institution_id=? AND user_id=?`,
+      [delivery.notificationId, institutionId, userId],
+      db,
     );
   }
   return true;
@@ -5270,4 +5553,782 @@ export async function getUserNotificationDeliveries(userId: string) {
     [userId],
     db
   );
+}
+
+// ==========================================
+// SCHOOL QR PAYMENTS & FEE ACCOUNTING ENGINE
+// ==========================================
+
+export type SchoolPaymentSettings = {
+  institutionName: string;
+  upiEnabled: boolean;
+  upiId: string;
+  payeeName: string;
+  paymentMethodName: string;
+  bankName: string;
+  accountNumber: string;
+  ifscCode: string;
+  paymentInstructions: string;
+  qrCodeUrl: string;
+};
+
+export async function getSchoolPaymentSettings(institutionId: string): Promise<SchoolPaymentSettings> {
+  const db = await ready();
+  const rowData = await row<{
+    institutionName: string;
+    upiEnabled: boolean;
+    upiId: string;
+    payeeName: string;
+    paymentMethodName: string;
+    bankName: string;
+    accountNumber: string;
+    ifscCode: string;
+    paymentInstructions: string;
+  }>(
+    `SELECT i.name AS "institutionName",
+            COALESCE(s.upi_enabled, FALSE) AS "upiEnabled",
+            COALESCE(s.upi_id, '') AS "upiId",
+            COALESCE(s.payee_name, '') AS "payeeName",
+            COALESCE(s.payment_method_name, 'School UPI / QR Code') AS "paymentMethodName",
+            COALESCE(s.bank_name, '') AS "bankName",
+            COALESCE(s.account_number, '') AS "accountNumber",
+            COALESCE(s.ifsc_code, '') AS "ifscCode",
+            COALESCE(s.payment_instructions, '') AS "paymentInstructions"
+     FROM institutions i
+     LEFT JOIN settings s ON s.institution_id = i.id
+     WHERE i.id = ?`,
+    [institutionId],
+    db
+  );
+
+  const assets = await rows<{ kind: string }>(
+    `SELECT kind FROM school_assets WHERE institution_id = ? AND kind = 'payment-qr'`,
+    [institutionId],
+    db
+  );
+
+  return {
+    institutionName: rowData?.institutionName || "",
+    upiEnabled: Boolean(rowData?.upiEnabled),
+    upiId: rowData?.upiId || "",
+    payeeName: rowData?.payeeName || rowData?.institutionName || "",
+    paymentMethodName: rowData?.paymentMethodName || "School UPI / QR Code",
+    bankName: rowData?.bankName || "",
+    accountNumber: rowData?.accountNumber || "",
+    ifscCode: rowData?.ifscCode || "",
+    paymentInstructions: rowData?.paymentInstructions || "",
+    qrCodeUrl: assets.length > 0 ? `/api/settings/assets/payment-qr` : "",
+  };
+}
+
+export async function saveSchoolPaymentSettings(
+  institutionId: string,
+  userId: string,
+  input: {
+    upiEnabled?: boolean;
+    upiId?: string;
+    payeeName?: string;
+    paymentMethodName?: string;
+    bankName?: string;
+    accountNumber?: string;
+    ifscCode?: string;
+    paymentInstructions?: string;
+  }
+): Promise<SchoolPaymentSettings> {
+  const db = await ready();
+  await db.begin(async (tx) => {
+    await run(
+      `INSERT INTO settings(
+         institution_id, upi_enabled, upi_id, payee_name, payment_method_name,
+         bank_name, account_number, ifsc_code, payment_instructions
+       ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(institution_id) DO UPDATE SET
+         upi_enabled = COALESCE(EXCLUDED.upi_enabled, settings.upi_enabled),
+         upi_id = COALESCE(EXCLUDED.upi_id, settings.upi_id),
+         payee_name = COALESCE(EXCLUDED.payee_name, settings.payee_name),
+         payment_method_name = COALESCE(EXCLUDED.payment_method_name, settings.payment_method_name),
+         bank_name = COALESCE(EXCLUDED.bank_name, settings.bank_name),
+         account_number = COALESCE(EXCLUDED.account_number, settings.account_number),
+         ifsc_code = COALESCE(EXCLUDED.ifsc_code, settings.ifsc_code),
+         payment_instructions = COALESCE(EXCLUDED.payment_instructions, settings.payment_instructions),
+         updated_at = CURRENT_TIMESTAMP`,
+      [
+        institutionId,
+        input.upiEnabled ?? false,
+        input.upiId ?? "",
+        input.payeeName ?? "",
+        input.paymentMethodName ?? "School UPI / QR Code",
+        input.bankName ?? "",
+        input.accountNumber ?? "",
+        input.ifscCode ?? "",
+        input.paymentInstructions ?? "",
+      ],
+      tx
+    );
+    await audit(institutionId, userId, "School Payment Settings Updated", "Settings", institutionId, input, tx);
+  });
+  return getSchoolPaymentSettings(institutionId);
+}
+
+export type SchoolQrPaymentSubmission = {
+  feeId: string;
+  amount: number;
+  utrNumber: string;
+  paymentDate: string;
+  notes?: string;
+  screenshotBuffer?: Buffer;
+  screenshotMime?: string;
+};
+
+export async function submitSchoolQrPayment(
+  institutionId: string,
+  studentId: string,
+  input: SchoolQrPaymentSubmission
+) {
+  const db = await ready();
+  const cleanUtr = input.utrNumber.trim();
+  if (!cleanUtr || cleanUtr.length < 4 || cleanUtr.length > 50) {
+    throw new Error("Enter a valid UTR or UPI transaction reference number.");
+  }
+  const cleanAmount = Number(input.amount);
+  if (!Number.isFinite(cleanAmount) || cleanAmount <= 0) {
+    throw new Error("Payment amount must be greater than zero.");
+  }
+
+  const paymentSettings = await getSchoolPaymentSettings(institutionId);
+  if (!paymentSettings.upiEnabled) {
+    throw new Error("School UPI / QR payments are currently disabled.");
+  }
+
+  // Ensure UTR uniqueness within the school (both in school_qr_payments and existing payments)
+  const existingUtr = await row<{ id: string; status: string }>(
+    `SELECT id, status FROM school_qr_payments WHERE institution_id = ? AND UPPER(utr_number) = UPPER(?)`,
+    [institutionId, cleanUtr],
+    db
+  );
+  if (existingUtr) {
+    if (existingUtr.status === "VERIFIED") {
+      throw new Error(`A payment with UTR "${cleanUtr}" has already been verified and credited.`);
+    }
+    if (existingUtr.status === "PENDING") {
+      throw new Error(`A payment with UTR "${cleanUtr}" is currently pending verification by the school office.`);
+    }
+    throw new Error(`A payment with UTR "${cleanUtr}" has already been submitted (Status: ${existingUtr.status}).`);
+  }
+
+  const existingPayment = await row<{ id: string }>(
+    `SELECT id FROM payments WHERE institution_id = ? AND UPPER(transaction_id) = UPPER(?) AND status <> 'Voided' LIMIT 1`,
+    [institutionId, cleanUtr],
+    db
+  );
+  if (existingPayment) {
+    throw new Error(`A payment with reference "${cleanUtr}" is already recorded in the fee collection system.`);
+  }
+
+  // Verify fee invoice
+  const fee = await row<{ id: string; pendingAmount: number; status: string }>(
+    `SELECT id, pending_amount AS "pendingAmount", status FROM fees WHERE institution_id = ? AND student_id = ? AND id = ?`,
+    [institutionId, studentId, input.feeId],
+    db
+  );
+  if (!fee) {
+    throw new Error("Fee invoice not found for this student.");
+  }
+  if (fee.pendingAmount <= 0 || fee.status === "Paid") {
+    throw new Error("This fee invoice is already fully paid.");
+  }
+  if (cleanAmount > fee.pendingAmount) {
+    throw new Error(`Amount ₹${cleanAmount} exceeds the pending balance of ₹${fee.pendingAmount}.`);
+  }
+
+  const id = randomUUID();
+  let screenshotAssetId: string | null = null;
+
+  if (input.screenshotBuffer && input.screenshotMime) {
+    const kind = `payment-screenshot:${id}`;
+    await putSchoolAsset(institutionId, studentId, kind, input.screenshotMime, input.screenshotBuffer);
+    screenshotAssetId = kind;
+  }
+
+  await run(
+    `INSERT INTO school_qr_payments(
+       id, institution_id, student_id, fee_id, amount, utr_number, payment_date,
+       screenshot_asset_id, status, rejection_reason, notes
+     ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', '', ?)`,
+    [
+      id,
+      institutionId,
+      studentId,
+      input.feeId,
+      cleanAmount,
+      cleanUtr,
+      input.paymentDate || new Date().toISOString().slice(0, 10),
+      screenshotAssetId,
+      input.notes || "",
+    ],
+    db
+  );
+
+  return {
+    id,
+    institutionId,
+    studentId,
+    feeId: input.feeId,
+    amount: cleanAmount,
+    utrNumber: cleanUtr,
+    paymentDate: input.paymentDate || new Date().toISOString().slice(0, 10),
+    screenshotAssetId,
+    status: "PENDING" as const,
+  };
+}
+
+export async function listSchoolQrPayments(
+  institutionId: string,
+  filters?: {
+    status?: string;
+    search?: string;
+    studentId?: string;
+    limit?: number;
+    offset?: number;
+  }
+) {
+  const db = await ready();
+  const where: string[] = ["qp.institution_id = ?"];
+  const args: unknown[] = [institutionId];
+
+  if (filters?.status && filters.status !== "All") {
+    where.push("qp.status = ?");
+    args.push(filters.status);
+  }
+  if (filters?.studentId) {
+    where.push("qp.student_id = ?");
+    args.push(filters.studentId);
+  }
+  if (filters?.search) {
+    const q = `%${filters.search.trim()}%`;
+    where.push("(s.name ILIKE ? OR s.admission ILIKE ? OR qp.utr_number ILIKE ? OR f.invoice_number ILIKE ?)");
+    args.push(q, q, q, q);
+  }
+
+  const countRow = await row<{ count: number }>(
+    `SELECT COUNT(*)::int count
+     FROM school_qr_payments qp
+     JOIN students s ON s.id = qp.student_id AND s.institution_id = qp.institution_id
+     JOIN fees f ON f.id = qp.fee_id AND f.institution_id = qp.institution_id
+     WHERE ${where.join(" AND ")}`,
+    args,
+    db
+  );
+
+  const limit = Math.min(filters?.limit ?? 50, 200);
+  const offset = Math.max(filters?.offset ?? 0, 0);
+
+  const items = await rows<{
+    id: string;
+    studentId: string;
+    studentName: string;
+    admission: string;
+    rollNumber: string;
+    className: string;
+    section: string;
+    photoPath: string | null;
+    feeId: string;
+    invoiceNumber: string;
+    feeType: string;
+    feeTotalAmount: number;
+    feePaidAmount: number;
+    feePendingAmount: number;
+    amount: number;
+    utrNumber: string;
+    paymentDate: string;
+    screenshotAssetId: string | null;
+    status: "PENDING" | "VERIFIED" | "REJECTED" | "REFUNDED";
+    rejectionReason: string;
+    verifiedBy: string | null;
+    verifiedByName: string | null;
+    verifiedAt: string | null;
+    paymentId: string | null;
+    receiptNumber: string | null;
+    notes: string;
+    createdAt: string;
+  }>(
+    `SELECT qp.id,
+            qp.student_id AS "studentId",
+            s.name AS "studentName",
+            s.admission,
+            s.roll_number AS "rollNumber",
+            s.class_name AS "className",
+            s.section,
+            s.photo_path AS "photoPath",
+            qp.fee_id AS "feeId",
+            f.invoice_number AS "invoiceNumber",
+            f.fee_type AS "feeType",
+            f.final_amount AS "feeTotalAmount",
+            f.paid_amount AS "feePaidAmount",
+            f.pending_amount AS "feePendingAmount",
+            qp.amount,
+            qp.utr_number AS "utrNumber",
+            qp.payment_date AS "paymentDate",
+            qp.screenshot_asset_id AS "screenshotAssetId",
+            qp.status,
+            qp.rejection_reason AS "rejectionReason",
+            qp.verified_by AS "verifiedBy",
+            u.name AS "verifiedByName",
+            qp.verified_at::text AS "verifiedAt",
+            qp.payment_id AS "paymentId",
+            p.receipt_number AS "receiptNumber",
+            qp.notes,
+            qp.created_at::text AS "createdAt"
+     FROM school_qr_payments qp
+     JOIN students s ON s.id = qp.student_id AND s.institution_id = qp.institution_id
+     JOIN fees f ON f.id = qp.fee_id AND f.institution_id = qp.institution_id
+     LEFT JOIN users u ON u.id = qp.verified_by
+     LEFT JOIN payments p ON p.id = qp.payment_id
+     WHERE ${where.join(" AND ")}
+     ORDER BY CASE WHEN qp.status = 'PENDING' THEN 0 ELSE 1 END, qp.created_at DESC
+     LIMIT ? OFFSET ?`,
+    [...args, limit, offset],
+    db
+  );
+
+  return {
+    total: countRow?.count ?? 0,
+    items,
+  };
+}
+
+export async function getSchoolQrPayment(institutionId: string, paymentId: string) {
+  const db = await ready();
+  return await row<{
+    id: string;
+    studentId: string;
+    studentName: string;
+    admission: string;
+    rollNumber: string;
+    className: string;
+    section: string;
+    photoPath: string | null;
+    feeId: string;
+    invoiceNumber: string;
+    feeType: string;
+    amount: number;
+    utrNumber: string;
+    paymentDate: string;
+    screenshotAssetId: string | null;
+    status: "PENDING" | "VERIFIED" | "REJECTED" | "REFUNDED";
+    rejectionReason: string;
+    verifiedBy: string | null;
+    verifiedByName: string | null;
+    verifiedAt: string | null;
+    paymentId: string | null;
+    receiptNumber: string | null;
+    notes: string;
+    createdAt: string;
+  }>(
+    `SELECT qp.id,
+            qp.student_id AS "studentId",
+            s.name AS "studentName",
+            s.admission,
+            s.roll_number AS "rollNumber",
+            s.class_name AS "className",
+            s.section,
+            s.photo_path AS "photoPath",
+            qp.fee_id AS "feeId",
+            f.invoice_number AS "invoiceNumber",
+            f.fee_type AS "feeType",
+            qp.amount,
+            qp.utr_number AS "utrNumber",
+            qp.payment_date AS "paymentDate",
+            qp.screenshot_asset_id AS "screenshotAssetId",
+            qp.status,
+            qp.rejection_reason AS "rejectionReason",
+            qp.verified_by AS "verifiedBy",
+            u.name AS "verifiedByName",
+            qp.verified_at::text AS "verifiedAt",
+            qp.payment_id AS "paymentId",
+            p.receipt_number AS "receiptNumber",
+            qp.notes,
+            qp.created_at::text AS "createdAt"
+     FROM school_qr_payments qp
+     JOIN students s ON s.id = qp.student_id AND s.institution_id = qp.institution_id
+     JOIN fees f ON f.id = qp.fee_id AND f.institution_id = qp.institution_id
+     LEFT JOIN users u ON u.id = qp.verified_by
+     LEFT JOIN payments p ON p.id = qp.payment_id
+     WHERE qp.institution_id = ? AND qp.id = ?`,
+    [institutionId, paymentId],
+    db
+  );
+}
+
+export async function verifySchoolQrPayment(
+  institutionId: string,
+  adminUserId: string,
+  paymentId: string,
+  options?: { notes?: string }
+) {
+  let resultReceiptNumber = "";
+  let paymentRecordId = "";
+
+  await connection().begin(async (tx) => {
+    // 1. Lock QR payment row
+    const qrRow = await row<{
+      id: string;
+      studentId: string;
+      feeId: string;
+      amount: number;
+      utrNumber: string;
+      paymentDate: string;
+      status: string;
+      notes: string;
+    }>(
+      `SELECT id, student_id AS "studentId", fee_id AS "feeId", amount, utr_number AS "utrNumber",
+              payment_date AS "paymentDate", status, notes
+       FROM school_qr_payments
+       WHERE institution_id = ? AND id = ?
+       FOR UPDATE`,
+      [institutionId, paymentId],
+      tx
+    );
+
+    if (!qrRow) {
+      throw new Error("QR Payment verification request not found.");
+    }
+
+    if (qrRow.status === "VERIFIED") {
+      throw new Error("This payment has already been verified.");
+    }
+    if (qrRow.status === "REJECTED") {
+      throw new Error("Cannot verify a rejected payment without re-submission.");
+    }
+
+    // 2. Lock fee invoice
+    const fee = await row<{
+      id: string;
+      studentId: string;
+      studentName: string;
+      invoiceNumber: string;
+      academicYear: string;
+      finalAmount: number;
+      paidAmount: number;
+      pendingAmount: number;
+    }>(
+      `SELECT f.id, f.student_id AS "studentId", s.name AS "studentName", f.invoice_number AS "invoiceNumber",
+              f.academic_year AS "academicYear", f.final_amount AS "finalAmount", f.paid_amount AS "paidAmount",
+              f.pending_amount AS "pendingAmount"
+       FROM fees f
+       JOIN students s ON s.id = f.student_id AND s.institution_id = f.institution_id
+       WHERE f.institution_id = ? AND f.id = ?
+       FOR UPDATE`,
+      [institutionId, qrRow.feeId],
+      tx
+    );
+
+    if (!fee) {
+      throw new Error("Fee invoice associated with this payment was not found.");
+    }
+
+    const cents = Math.round(qrRow.amount * 100);
+    const pendingCents = Math.round(Number(fee.pendingAmount) * 100);
+    const paidCents = Math.round(Number(fee.paidAmount) * 100);
+    const finalCents = Math.round(Number(fee.finalAmount) * 100);
+
+    if (cents > pendingCents) {
+      throw new Error(`Verified amount ₹${qrRow.amount} exceeds current pending fee of ₹${fee.pendingAmount}.`);
+    }
+
+    // Generate formal receipt number
+    const receipt = await nextNumber(institutionId, "REC", new Date(qrRow.paymentDate), tx);
+    resultReceiptNumber = receipt;
+    paymentRecordId = randomUUID();
+
+    const newPaidAmount = (paidCents + cents) / 100;
+    const newRemainingAmount = Math.max(0, (finalCents - paidCents - cents) / 100);
+    const newFeeStatus = newRemainingAmount === 0 ? "Paid" : "Partially Paid";
+
+    // 3. Insert into payments
+    await run(
+      `INSERT INTO payments(
+         id, institution_id, student_id, fee_id, receipt_number, amount,
+         payment_method, transaction_id, payment_date, status, notes,
+         request_id, created_by, original_amount, net_payable
+       ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'Success', ?, ?, ?, ?, ?)`,
+      [
+        paymentRecordId,
+        institutionId,
+        fee.studentId,
+        fee.id,
+        receipt,
+        qrRow.amount,
+        "School UPI / QR Code",
+        qrRow.utrNumber,
+        qrRow.paymentDate,
+        options?.notes || qrRow.notes || `Verified QR Payment (UTR: ${qrRow.utrNumber})`,
+        `qr_${qrRow.id}`,
+        adminUserId,
+        fee.pendingAmount,
+        fee.pendingAmount,
+      ],
+      tx
+    );
+
+    // 4. Update fees table
+    await run(
+      `UPDATE fees
+       SET paid_amount = ?, pending_amount = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND institution_id = ?`,
+      [newPaidAmount, newRemainingAmount, newFeeStatus, fee.id, institutionId],
+      tx
+    );
+
+    // 5. Update student fee totals
+    await run(
+      `UPDATE students
+       SET paid_fee = (SELECT COALESCE(SUM(paid_amount), 0) FROM fees WHERE student_id = ? AND institution_id = ?),
+           pending_fee = (SELECT COALESCE(SUM(pending_amount), 0) FROM fees WHERE student_id = ? AND institution_id = ?),
+           total_fee = (SELECT COALESCE(SUM(final_amount), 0) FROM fees WHERE student_id = ? AND institution_id = ?),
+           fee = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND institution_id = ?`,
+      [fee.studentId, institutionId, fee.studentId, institutionId, fee.studentId, institutionId, newFeeStatus, fee.studentId, institutionId],
+      tx
+    );
+
+    // 6. Insert into receipts
+    await run(
+      `INSERT INTO receipts(
+         id, institution_id, receipt_number, student_id, payment_id,
+         invoice_number, amount, payment_method, transaction_id, issued_date
+       ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        randomUUID(),
+        institutionId,
+        receipt,
+        fee.studentId,
+        paymentRecordId,
+        fee.invoiceNumber,
+        qrRow.amount,
+        "School UPI / QR Code",
+        qrRow.utrNumber,
+        qrRow.paymentDate,
+      ],
+      tx
+    );
+
+    // 7. Insert into account_transactions (Cash Book - EXACTLY ONE INCOME ENTRY)
+    await run(
+      `INSERT INTO account_transactions(
+         id, institution_id, academic_year, transaction_type, category,
+         amount_paise, transaction_date, description, payment_method,
+         reference_number, source_type, source_id, status, notes, created_by
+       ) VALUES(?, ?, ?, 'income', 'Student Fee Collection', ?, ?, ?, ?, ?, 'fee_payment', ?, 'Active', ?, ?)`,
+      [
+        randomUUID(),
+        institutionId,
+        String(fee.academicYear || ""),
+        cents,
+        qrRow.paymentDate,
+        `${fee.studentName} · ${fee.invoiceNumber} · UTR: ${qrRow.utrNumber}`,
+        "UPI / QR Code",
+        receipt,
+        paymentRecordId,
+        options?.notes || `Verified School QR payment (UTR: ${qrRow.utrNumber})`,
+        adminUserId,
+      ],
+      tx
+    );
+
+    // 8. Update school_qr_payments record to VERIFIED
+    await run(
+      `UPDATE school_qr_payments
+       SET status = 'VERIFIED',
+           verified_by = ?,
+           verified_at = CURRENT_TIMESTAMP,
+           payment_id = ?,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND institution_id = ?`,
+      [adminUserId, paymentRecordId, qrRow.id, institutionId],
+      tx
+    );
+
+    // 9. Activity & Audit
+    await activity(
+      institutionId,
+      "payment",
+      "QR Fee payment verified",
+      `${fee.studentName} paid ₹${qrRow.amount.toLocaleString("en-IN")} via QR Code (UTR: ${qrRow.utrNumber})`,
+      String(fee.studentId),
+      paymentRecordId,
+      qrRow.amount,
+      tx
+    );
+
+    await audit(
+      institutionId,
+      adminUserId,
+      "QR Payment Verified",
+      "SchoolQRPayment",
+      qrRow.id,
+      { amount: qrRow.amount, utr: qrRow.utrNumber, receipt, invoice: fee.invoiceNumber },
+      tx
+    );
+  });
+
+  return {
+    success: true,
+    paymentId: paymentRecordId,
+    receiptNumber: resultReceiptNumber,
+  };
+}
+
+export async function rejectSchoolQrPayment(
+  institutionId: string,
+  adminUserId: string,
+  paymentId: string,
+  reason: string
+) {
+  const cleanReason = reason.trim();
+  if (!cleanReason) {
+    throw new Error("A rejection reason is required.");
+  }
+
+  await connection().begin(async (tx) => {
+    const qrRow = await row<{ id: string; status: string; studentId: string; utrNumber: string }>(
+      `SELECT id, status, student_id AS "studentId", utr_number AS "utrNumber"
+       FROM school_qr_payments
+       WHERE institution_id = ? AND id = ?
+       FOR UPDATE`,
+      [institutionId, paymentId],
+      tx
+    );
+
+    if (!qrRow) {
+      throw new Error("QR Payment verification request not found.");
+    }
+    if (qrRow.status === "VERIFIED") {
+      throw new Error("Cannot reject an already verified payment.");
+    }
+
+    await run(
+      `UPDATE school_qr_payments
+       SET status = 'REJECTED',
+           rejection_reason = ?,
+           verified_by = ?,
+           verified_at = CURRENT_TIMESTAMP,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND institution_id = ?`,
+      [cleanReason, adminUserId, qrRow.id, institutionId],
+      tx
+    );
+
+    await audit(
+      institutionId,
+      adminUserId,
+      "QR Payment Rejected",
+      "SchoolQRPayment",
+      qrRow.id,
+      { utr: qrRow.utrNumber, reason: cleanReason },
+      tx
+    );
+  });
+
+  return { success: true };
+}
+
+export async function refundSchoolQrPayment(
+  institutionId: string,
+  adminUserId: string,
+  paymentId: string,
+  reason: string
+) {
+  await connection().begin(async (tx) => {
+    const qrRow = await row<{
+      id: string;
+      status: string;
+      studentId: string;
+      amount: number;
+      utrNumber: string;
+      paymentId: string | null;
+      feeId: string;
+    }>(
+      `SELECT id, status, student_id AS "studentId", amount, utr_number AS "utrNumber",
+              payment_id AS "paymentId", fee_id AS "feeId"
+       FROM school_qr_payments
+       WHERE institution_id = ? AND id = ?
+       FOR UPDATE`,
+      [institutionId, paymentId],
+      tx
+    );
+
+    if (!qrRow || qrRow.status !== "VERIFIED") {
+      throw new Error("Only verified QR payments can be refunded.");
+    }
+
+    if (qrRow.paymentId) {
+      await run(
+        `UPDATE account_transactions
+         SET status = 'Voided', updated_at = CURRENT_TIMESTAMP
+         WHERE institution_id = ? AND source_type = 'fee_payment' AND source_id = ?`,
+        [institutionId, qrRow.paymentId],
+        tx
+      );
+      await run(
+        `UPDATE payments
+         SET status = 'Voided'
+         WHERE institution_id = ? AND id = ?`,
+        [institutionId, qrRow.paymentId],
+        tx
+      );
+      await run(
+        `UPDATE fees
+         SET paid_amount = GREATEST(0, paid_amount - ?),
+             pending_amount = pending_amount + ?,
+             status = 'Pending',
+             updated_at = CURRENT_TIMESTAMP
+         WHERE institution_id = ? AND id = ?`,
+        [qrRow.amount, qrRow.amount, institutionId, qrRow.feeId],
+        tx
+      );
+      await run(
+        `UPDATE students
+         SET paid_fee = (SELECT COALESCE(SUM(paid_amount), 0) FROM fees WHERE student_id = ? AND institution_id = ?),
+             pending_fee = (SELECT COALESCE(SUM(pending_amount), 0) FROM fees WHERE student_id = ? AND institution_id = ?),
+             fee = 'Pending', updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND institution_id = ?`,
+        [qrRow.studentId, institutionId, qrRow.studentId, institutionId, qrRow.studentId, institutionId],
+        tx
+      );
+    }
+
+    await run(
+      `UPDATE school_qr_payments
+       SET status = 'REFUNDED',
+           rejection_reason = ?,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND institution_id = ?`,
+      [reason || "Payment refunded", qrRow.id, institutionId],
+      tx
+    );
+
+    await audit(
+      institutionId,
+      adminUserId,
+      "QR Payment Refunded",
+      "SchoolQRPayment",
+      qrRow.id,
+      { utr: qrRow.utrNumber, reason },
+      tx
+    );
+  });
+
+  return { success: true };
+}
+
+export async function getSchoolQrPaymentScreenshot(institutionId: string, paymentId: string) {
+  const db = await ready();
+  const payment = await row<{ screenshotAssetId: string | null }>(
+    `SELECT screenshot_asset_id AS "screenshotAssetId" FROM school_qr_payments WHERE institution_id = ? AND id = ?`,
+    [institutionId, paymentId],
+    db
+  );
+  if (!payment || !payment.screenshotAssetId) return null;
+  return getSchoolAsset(institutionId, payment.screenshotAssetId);
 }

@@ -1,4 +1,5 @@
 "use client";
+import { readApiJson } from "@/lib/api-response";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Download, IndianRupee, Loader2, Plus, Search, X } from "lucide-react";
 import { DataActions } from "./data-actions";
@@ -83,7 +84,7 @@ export function SalaryManagement() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),
       }),
-      j = await r.json();
+      j = await readApiJson(r);
     if (!r.ok) return setMessage(j.error);
     setOpen(false);
     setMessage("Salary added successfully.");
@@ -97,7 +98,7 @@ export function SalaryManagement() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...body, action: "payment", id: pay!.id, requestId: paymentRequestId }),
       }),
-      j = await r.json();
+      j = await readApiJson(r);
     if (!r.ok) return setMessage(j.error);
     setPay(null);
     setPaymentRequestId("");

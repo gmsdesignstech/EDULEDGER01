@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiJson } from "@/lib/api-response";
 import { useCallback, useEffect, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import { CheckCheck, Clock3, FileText, MessageCircle, RefreshCw, Send, TriangleAlert } from "lucide-react";
@@ -89,8 +90,8 @@ export function WhatsAppDashboard() {
     }
     if (!response.ok) throw new Error(body.error || "Could not load WhatsApp dashboard.");
     setData(body);
-    if(diagnosticResponse.ok)setDiagnostics(await diagnosticResponse.json());
-    if(scheduledResponse.ok)setScheduled((await scheduledResponse.json()).items||[]);
+    if(diagnosticResponse.ok)setDiagnostics(await readApiJson(diagnosticResponse));
+    if(scheduledResponse.ok)setScheduled((await readApiJson(scheduledResponse)).items||[]);
   }, []);
 
   useEffect(() => {
@@ -115,7 +116,7 @@ export function WhatsAppDashboard() {
         autoMarksheet: data.configuration.autoMarksheet,
       }),
     });
-    const body = await response.json();
+    const body = await readApiJson(response);
     setBusy(false);
     if (!response.ok) return setNotice(body.error || "Could not save configuration.");
     setData((current) => current ? { ...current, configuration: body.configuration } : current);
@@ -128,7 +129,7 @@ export function WhatsAppDashboard() {
     setBusy(true);
     setNotice("");
     const response=await fetch("/api/whatsapp/configuration",{method:"DELETE"});
-    const body=await response.json();
+    const body=await readApiJson(response);
     setBusy(false);
     if(!response.ok)return setNotice(body.error||"Could not disconnect WhatsApp configuration.");
     setData(current=>current?{...current,configuration:body.configuration}:current);
@@ -145,7 +146,7 @@ export function WhatsAppDashboard() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...template, variables: template.variables.split(",").map((value) => value.trim()).filter(Boolean) }),
     });
-    const body = await response.json();
+    const body = await readApiJson(response);
     setBusy(false);
     if (!response.ok) return setNotice(body.error || "Could not save template.");
     setData((current) => current ? { ...current, templates: body.templates } : current);
@@ -156,7 +157,7 @@ export function WhatsAppDashboard() {
   async function retry(id: string) {
     setBusy(true);
     const response = await fetch("/api/whatsapp/messages", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
-    const body = await response.json();
+    const body = await readApiJson(response);
     setBusy(false);
     if (!response.ok) return setNotice(body.error || "Retry failed.");
     await load();

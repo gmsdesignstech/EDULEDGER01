@@ -1,4 +1,4 @@
-import type { Metadata,Viewport } from "next";import "./globals.css";import {ThemeProvider} from "@/components/theme";import{getSiteOrigin}from"@/lib/site-url";import {NotificationPushManager} from "@/components/notification-push-manager";import {PwaInstallPrompt} from "@/components/pwa-install-prompt";
+import type { Metadata,Viewport } from "next";import "./globals.css";import {ThemeProvider} from "@/components/theme";import{getSiteOrigin}from"@/lib/site-url";import {NotificationPushManager} from "@/components/notification-push-manager";import {PwaInstallPrompt} from "@/components/pwa-install-prompt";import {PortalUpdatePrompt} from "@/components/portal-update-prompt";
 const siteUrl=getSiteOrigin(),title="EduLedger – School Management Software | Complete School ERP",description="EduLedger is a modern school management software and school ERP for managing students, staff, attendance, fees, exams, timetable, communication and school operations.";
 export const metadata:Metadata={
   metadataBase:new URL(siteUrl),
@@ -12,4 +12,4 @@ export const metadata:Metadata={
   twitter:{card:"summary_large_image",title,description,images:["/icons/icon-512.png"]}
 };
 export const viewport:Viewport={width:"device-width",initialScale:1,viewportFit:"cover",themeColor:[{media:"(prefers-color-scheme: light)",color:"#f8faff"},{media:"(prefers-color-scheme: dark)",color:"#07111f"}]};
-export default function RootLayout({children}:{children:React.ReactNode}){return <html lang="en" data-scroll-behavior="smooth" suppressHydrationWarning><body><ThemeProvider>{children}<NotificationPushManager /><PwaInstallPrompt /></ThemeProvider></body></html>}
+export default function RootLayout({children}:{children:React.ReactNode}){return <html lang="en" data-scroll-behavior="smooth" suppressHydrationWarning><body><ThemeProvider>{children}<NotificationPushManager /><PwaInstallPrompt /><PortalUpdatePrompt /></ThemeProvider></body></html>}

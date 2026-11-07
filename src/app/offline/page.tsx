@@ -21,7 +21,7 @@ export default function OfflinePage() {
           <WifiOff className="size-10" />
         </div>
 
-        <h1 className="mt-6 text-2xl font-black tracking-tight">You're Offline</h1>
+        <h1 className="mt-6 text-2xl font-black tracking-tight">You&apos;re Offline</h1>
         <p className="mt-3 text-sm leading-relaxed text-slate-600 dark:text-slate-400">
           It looks like you lost your internet connection. Please check your Wi-Fi or mobile data network to reconnect.
         </p>
@@ -33,7 +33,7 @@ export default function OfflinePage() {
               <strong className="block font-bold text-blue-900 dark:text-blue-200">
                 Privacy Protection
               </strong>
-              Confidential student records, attendance, marks, and financial data are never stored in unencrypted offline caches to protect sensitive school information.
+              Student records, attendance, marks, fees, and payment actions are not available offline. Unsaved changes are not queued or submitted later.
             </div>
           </div>
         </div>

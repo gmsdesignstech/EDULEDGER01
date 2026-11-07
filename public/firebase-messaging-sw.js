@@ -1,9 +1,9 @@
-/* eslint-disable no-restricted-globals */
-// EduLedger PWA Service Worker (v2)
+// EduLedger PWA Service Worker (v5)
 // Handles offline fallback, static asset caching, and Firebase Cloud Messaging push notifications.
 
-const CACHE_NAME = "eduledger-pwa-v2";
+const CACHE_NAME = "eduledger-pwa-v5";
 const OFFLINE_URL = "/offline.html";
+const isDev = self.location.hostname === "localhost" || self.location.hostname === "127.0.0.1";
 
 const PRECACHE_ASSETS = [
   "/offline.html",
@@ -17,8 +17,10 @@ const PRECACHE_ASSETS = [
 // Sensitive route prefixes that MUST NEVER be cached
 const SENSITIVE_PREFIXES = [
   "/api/",
+  "/admin",
   "/parent",
   "/teacher",
+  "/student",
   "/dashboard",
   "/students",
   "/fees",
@@ -28,6 +30,14 @@ const SENSITIVE_PREFIXES = [
   "/reports",
   "/settings",
   "/auth",
+  "/accounts",
+  "/cash-book",
+  "/classes",
+  "/documents",
+  "/exams",
+  "/results",
+  "/subscription",
+  "/timetable",
 ];
 
 function isSensitiveUrl(pathname) {
@@ -40,7 +50,6 @@ self.addEventListener("install", (event) => {
     caches
       .open(CACHE_NAME)
       .then((cache) => cache.addAll(PRECACHE_ASSETS))
-      .then(() => self.skipWaiting())
       .catch((err) => {
         console.warn("[SW] Pre-cache failed:", err);
       })
@@ -55,7 +64,7 @@ self.addEventListener("activate", (event) => {
       .then((cacheNames) =>
         Promise.all(
           cacheNames.map((name) => {
-            if (name !== CACHE_NAME) {
+            if (name.startsWith("eduledger-pwa-") && name !== CACHE_NAME) {
               return caches.delete(name);
             }
           })
@@ -63,6 +72,11 @@ self.addEventListener("activate", (event) => {
       )
       .then(() => self.clients.claim())
   );
+});
+
+// Updates wait for an explicit portal user action so the current task is not interrupted.
+self.addEventListener("message", (event) => {
+  if (event.data?.type === "SKIP_WAITING") event.waitUntil(self.skipWaiting());
 });
 
 // 3. Fetch Event: Strict caching policy protecting sensitive records
@@ -78,6 +92,11 @@ self.addEventListener("fetch", (event) => {
 
   // Same-origin checks
   if (url.origin === self.location.origin) {
+    // Development mode: NEVER cache Next.js chunks, Turbopack, or HMR in local dev
+    if (isDev && (url.pathname.startsWith("/_next/") || url.pathname.includes("turbopack") || url.pathname.includes("webpack"))) {
+      return;
+    }
+
     // SECURITY INVARIANT: Sensitive data, portals, and API routes are NETWORK ONLY!
     // Never cache student records, marks, fees, or session data.
     if (isSensitiveUrl(url.pathname)) {
@@ -92,15 +111,11 @@ self.addEventListener("fetch", (event) => {
     }
 
     // Static assets (Next.js chunks, styles, icons, fonts)
-    if (
+    const isPublicStaticAsset =
       url.pathname.startsWith("/_next/static/") ||
       url.pathname.startsWith("/icons/") ||
-      url.pathname.endsWith(".png") ||
-      url.pathname.endsWith(".jpeg") ||
-      url.pathname.endsWith(".jpg") ||
-      url.pathname.endsWith(".svg") ||
-      url.pathname.endsWith(".woff2")
-    ) {
+      url.pathname === "/eduledger-logo.jpeg";
+    if (isPublicStaticAsset) {
       event.respondWith(
         caches.match(request).then((cached) => {
           if (cached) return cached;

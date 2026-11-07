@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiJson } from "@/lib/api-response";
 import { useEffect, useState } from "react";
 import {
   Bell,
@@ -33,7 +34,7 @@ export default function ParentNotificationsPage() {
     try {
       const res = await fetch("/api/parent/notifications");
       if (res.ok) {
-        const data = await res.json();
+        const data = await readApiJson(res);
         setNotifications(data.notifications || []);
         setUnreadCount(data.unread || 0);
       }
@@ -57,7 +58,7 @@ export default function ParentNotificationsPage() {
         body: JSON.stringify(id ? { id } : {}),
       });
       if (res.ok) {
-        const data = await res.json();
+        const data = await readApiJson(res);
         setUnreadCount(data.unread || 0);
         setNotifications((prev) =>
           prev.map((n) => (!id || n.id === id ? { ...n, readAt: new Date().toISOString() } : n))

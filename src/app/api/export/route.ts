@@ -147,6 +147,8 @@ export async function GET(request: Request) {
     type = exportTypeAliases[requestedType] || requestedType,
     format = q.get("format") === "pdf" ? "pdf" : q.get("format") === "csv" ? "csv" : "xlsx",
     template = q.get("template") === "1";
+  const from=q.get("from"),to=q.get("to");
+  if((from&&!/^\d{4}-\d{2}-\d{2}$/.test(from))||(to&&!/^\d{4}-\d{2}-\d{2}$/.test(to))||(from&&to&&from>to))return NextResponse.json({error:"Choose a valid report date range."},{status:400});
   const financeTypes=new Set(["fees","reports","payments","salary-management"]),adminOnlyTypes=new Set(["teachers","promotions","settings"]);if(financeTypes.has(type)&&!["SCHOOL_ADMIN","SUPER_ADMIN","ACCOUNTANT"].includes(user.role))return NextResponse.json({error:"Forbidden"},{status:403});if(adminOnlyTypes.has(type)&&!["SCHOOL_ADMIN","SUPER_ADMIN"].includes(user.role))return NextResponse.json({error:"Forbidden"},{status:403});if(type==="dashboard"&&!["SCHOOL_ADMIN","SUPER_ADMIN","ACCOUNTANT"].includes(user.role))return NextResponse.json({error:"Forbidden"},{status:403});
   if(type==="promotions"&&!['SCHOOL_ADMIN','SUPER_ADMIN'].includes(user.role))return NextResponse.json({error:"Forbidden"},{status:403});
   if(type==="staff-attendance"&&!['SCHOOL_ADMIN','SUPER_ADMIN','ACCOUNTANT'].includes(user.role))return NextResponse.json({error:"Forbidden"},{status:403});
@@ -165,7 +167,10 @@ export async function GET(request: Request) {
       className: q.get("class") || undefined,
       section: q.get("section") || undefined,
       fee: q.get("status") || undefined,
+      status: q.get("studentStatus") || undefined,
+      studentId: q.get("student") || undefined,
       academicYear:q.get("year")||undefined,
+      limit: 10000,
     });
   else if(type==="staff-attendance"){
     const date=q.get("date")||new Date().toISOString().slice(0,10),month=q.get("month")||date.slice(0,7),data=await staffAttendanceData(user.institutionId,date,month,q.get("staffKey")||undefined),school=await getInstitution(user.institutionId),monthly=q.get("report")==="monthly",search=(q.get("search")||"").toLowerCase(),department=q.get("department")||"",status=q.get("status")||"";
@@ -180,22 +185,29 @@ export async function GET(request: Request) {
   else if (type === "attendance")
     rows = await listAttendance(user.institutionId, {
       date: q.get("date") || undefined,
+      from: q.get("from") || undefined,
+      to: q.get("to") || undefined,
+      studentId: q.get("student") || undefined,
       className: q.get("class") || undefined,
       section: q.get("section") || undefined,
       status: q.get("status") || undefined,
       academicYear:q.get("year")||undefined,
+      limit: 10000,
     });
   else if (type === "fees" || type === "reports")
     rows = await listFees(user.institutionId, {
       search: q.get("search") || undefined,
+      studentId: q.get("student") || undefined,
       className: q.get("class") || undefined,
       section: q.get("section") || undefined,
       status: q.get("status") || undefined,
       academicYear: q.get("year") || undefined,
+      limit: 10000,
     });
   else if (type === "payments")
     rows = await listPayments(user.institutionId, {
       search: q.get("search") || undefined,
+      studentId: q.get("student") || undefined,
       className: q.get("class") || undefined,
       section: q.get("section") || undefined,
       method: q.get("method") || undefined,
@@ -203,6 +215,7 @@ export async function GET(request: Request) {
       from: q.get("from") || undefined,
       to: q.get("to") || undefined,
       academicYear: q.get("year") || undefined,
+      limit: 10000,
     });
   else if(type==="promotions")rows=await listPromotionHistory(user.institutionId,q.get("search")||"");
   else if(type==="dashboard"){const years=await dashboardYears(user.institutionId),requested=q.get("year");if(requested&&!years.some(y=>y.name===requested))return NextResponse.json({error:"Academic year unavailable"},{status:404});const selected=requested??years.find(y=>y.isActive)?.name??years[0]?.name;if(!selected)return NextResponse.json({error:"No academic year available"},{status:404});const data=await dashboardData(user.institutionId,selected);rows=[{metric:"Academic Year",value:selected},{metric:"Students",value:data.students},{metric:"Teachers",value:data.teachers},{metric:"Present Today",value:data.present},{metric:"Absent Today",value:data.absent},{metric:"Total Fees",value:data.fees.total},{metric:"Collected Fees",value:data.fees.collected},{metric:"Pending Fees",value:data.fees.pending},{metric:"Overdue Fees",value:data.fees.overdue},{metric:"Today's Collection",value:data.collections.today},{metric:"This Month",value:data.collections.month},{metric:"Transactions",value:data.collections.transactions}]}
@@ -231,7 +244,7 @@ export async function GET(request: Request) {
   if (format === "pdf") {
     if (template)
       return NextResponse.json({ error: "PDF is available for saved records, not blank import templates." }, { status: 400 });
-    const [school,asset]=await Promise.all([getInstitution(user.institutionId),getSchoolAsset(user.institutionId,"logo")]),model=pdfModel(type==="staff-attendance"&&q.get("report")==="monthly"?"staff-attendance-monthly":type,rows as Record<string,unknown>[]),activeFilters=[q.get("search")&&`Search: ${q.get("search")}`,q.get("class")&&`Class: ${q.get("class")}`,q.get("section")&&`Section: ${q.get("section")}`,q.get("department")&&`Department: ${q.get("department")}`,q.get("status")&&`Status: ${q.get("status")}`,q.get("method")&&`Method: ${q.get("method")}`,q.get("date")&&`Date: ${q.get("date")}`,q.get("month")&&`Month: ${q.get("month")}`,q.get("from")&&`From: ${q.get("from")}`,q.get("to")&&`To: ${q.get("to")}`].filter(Boolean) as string[];
+    const [school,asset]=await Promise.all([getInstitution(user.institutionId),getSchoolAsset(user.institutionId,"logo")]),model=pdfModel(type==="staff-attendance"&&q.get("report")==="monthly"?"staff-attendance-monthly":type,rows as Record<string,unknown>[]);if(type==="reports")model.title="Student Fee Report";const activeFilters=[q.get("search")&&`Search: ${q.get("search")}`,q.get("class")&&`Class: ${q.get("class")}`,q.get("section")&&`Section: ${q.get("section")}`,q.get("department")&&`Department: ${q.get("department")}`,q.get("status")&&`Status: ${q.get("status")}`,q.get("method")&&`Method: ${q.get("method")}`,q.get("date")&&`Date: ${q.get("date")}`,q.get("month")&&`Month: ${q.get("month")}`,q.get("from")&&`From: ${q.get("from")}`,q.get("to")&&`To: ${q.get("to")}`].filter(Boolean) as string[];
     try {
       const data=await createFinancialReportPdf({title:model.title,academicYear:type==="staff-attendance"?(q.get("month")||q.get("date")||school.academicYear):(q.get("year")||school.academicYear),school:{...school,logo:asset?{mimeType:asset.mimeType,data:new Uint8Array(asset.data)}:undefined},columns:model.columns,rows:model.rows,totals:[{label:"Total Records",value:String(model.rows.length)}],filters:activeFilters});
       await logExport(user.institutionId,user.id,`${type} PDF`,model.rows.length);
@@ -241,7 +254,7 @@ export async function GET(request: Request) {
     }
   }
   const sheetRows=type==="students"&&!template?(rows as Record<string,unknown>[]).map(item=>({...item,"Roll Number":item.rollNumber??"","Academic Year":item.academicYear??"","Blood Group":item.bloodGroup??"","Mother Name":item.motherName??"","Special Quota":item.specialQuota??"","Quota Description":item.specialQuotaDescription??""})):rows as Record<string,unknown>[];
-  const [school,asset]=await Promise.all([getCompleteSettings(user.institutionId),getSchoolAsset(user.institutionId,"logo")]),title=template?`${label(type)} Import Template`:pdfModel(type,sheetRows).title,academicYear=q.get("year")||school.academicYear,activeFilters=[q.get("class")&&`Class: ${q.get("class")}`,q.get("section")&&`Section: ${q.get("section")}`,q.get("date")&&`Date: ${q.get("date")}`,q.get("month")&&`Month: ${q.get("month")}`,q.get("from")&&`From: ${q.get("from")}`,q.get("to")&&`To: ${q.get("to")}`].filter(Boolean) as string[];
+  const [school,asset]=await Promise.all([getCompleteSettings(user.institutionId),getSchoolAsset(user.institutionId,"logo")]),title=template?`${label(type)} Import Template`:type==="reports"?"Student Fee Report":pdfModel(type,sheetRows).title,academicYear=q.get("year")||school.academicYear,activeFilters=[q.get("class")&&`Class: ${q.get("class")}`,q.get("section")&&`Section: ${q.get("section")}`,q.get("date")&&`Date: ${q.get("date")}`,q.get("month")&&`Month: ${q.get("month")}`,q.get("from")&&`From: ${q.get("from")}`,q.get("to")&&`To: ${q.get("to")}`].filter(Boolean) as string[];
   const safeSheetRows=sheetRows.map(item=>Object.fromEntries(Object.entries(item).map(([key,value])=>[key,spreadsheetSafeValue(value)])));
   const data=format==="csv"?XLSX.utils.sheet_to_csv(XLSX.utils.json_to_sheet(safeSheetRows)):
     await createSchoolExcelReport({school,logo:asset?{mimeType:asset.mimeType,data:asset.data}:undefined,title,academicYear,rows:safeSheetRows,filters:activeFilters,sheetName:label(type)});
