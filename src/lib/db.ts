@@ -5408,6 +5408,46 @@ export async function getUserActiveDeviceTokens(userId: string): Promise<
   );
 }
 
+export async function getPwaDiagnosticsData(institutionId: string) {
+  const db = await ready();
+  const tokenSummary = await rows<{ deviceType: string; count: number }>(
+    `SELECT device_type AS "deviceType", COUNT(*)::int AS count
+     FROM fcm_device_tokens
+     WHERE institution_id = ? AND status = 'ACTIVE'
+     GROUP BY device_type`,
+    [institutionId],
+    db
+  ).catch(() => []);
+
+  const totalActiveDevices = tokenSummary.reduce((sum: number, item: { count: number }) => sum + item.count, 0);
+
+  const deliveryStats = await row<{
+    total: number;
+    delivered: number;
+    pending: number;
+    failed: number;
+  }>(
+    `SELECT
+       COUNT(*)::int AS total,
+       COUNT(*) FILTER (WHERE status = 'DELIVERED')::int AS delivered,
+       COUNT(*) FILTER (WHERE status = 'PENDING')::int AS pending,
+       COUNT(*) FILTER (WHERE status = 'FAILED')::int AS failed
+     FROM notification_deliveries
+     WHERE institution_id = ?`,
+    [institutionId],
+    db
+  ).catch(() => ({ total: 0, delivered: 0, pending: 0, failed: 0 }));
+
+  const notifSettings = await getSchoolNotificationSettings(institutionId).catch(() => null);
+
+  return {
+    tokenSummary,
+    totalActiveDevices,
+    deliveryStats: deliveryStats || { total: 0, delivered: 0, pending: 0, failed: 0 },
+    notifSettings,
+  };
+}
+
 export async function getNotificationEventByKey(eventKey: string) {
   const db = await ready();
   const res = await row<{

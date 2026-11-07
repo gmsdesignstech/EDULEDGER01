@@ -15,6 +15,7 @@ export default defineConfig({
       "tests/notifications-provider.test.ts",
       "tests/parent-fee-payment-verification.test.ts",
       "tests/pwa-completion.test.ts",
+      "tests/pwa-installation-and-diagnostics.test.ts",
       "tests/pwa.test.ts",
       "tests/payroll-calculations.test.ts",
       "tests/postgres-test-guard.test.ts",

@@ -6,13 +6,13 @@ import { registerDeviceToken, revokeDeviceToken } from "@/lib/db";
 export const runtime = "nodejs";
 
 const registerSchema = z.object({
-  token: z.string().trim().min(10).max(500),
+  token: z.string().trim().min(10).max(4096),
   deviceType: z.string().trim().max(50).default("web"),
   userAgent: z.string().trim().max(300).default(""),
 });
 
 const revokeSchema = z.object({
-  token: z.string().trim().min(10).max(500),
+  token: z.string().trim().min(10).max(4096),
 });
 
 export async function POST(request: Request) {

@@ -5,7 +5,7 @@ export const runtime = "nodejs";
 export async function GET() {
   const manifest = {
     name: "EduLedger - Teacher Portal",
-    short_name: "Teacher Portal",
+    short_name: "EduLedger Teacher",
     description: "EduLedger Teacher Portal for attendance, marks, homework, and timetable.",
     start_url: "/teacher",
     display: "standalone",

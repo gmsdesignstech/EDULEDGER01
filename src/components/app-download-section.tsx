@@ -3,15 +3,22 @@
 import { useMemo, useState, useEffect } from "react";
 import Link from "next/link";
 import {
+  AlertCircle,
   BookOpen,
   CalendarCheck2,
   Check,
   ChevronRight,
   Clock,
   Download,
+  ExternalLink,
   GraduationCap,
+  Monitor,
+  Share,
+  Shield,
   ShieldCheck,
   Smartphone,
+  Sparkles,
+  Users,
   X,
 } from "lucide-react";
 import { generateQrMatrix } from "@/lib/qr-code";
@@ -21,6 +28,17 @@ interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
 }
+
+type AppRole = "admin" | "teacher" | "parent";
+
+type InstallStatus =
+  | "available"
+  | "in_progress"
+  | "successful"
+  | "dismissed"
+  | "already_installed"
+  | "instructions_required"
+  | "unsupported";
 
 function QrSvg({ url, title, accentColor = "#2563eb" }: { url: string; title: string; accentColor?: string }) {
   const matrix = useMemo(() => {
@@ -62,61 +80,132 @@ function QrSvg({ url, title, accentColor = "#2563eb" }: { url: string; title: st
 
 export function AppDownloadSection() {
   const siteUrl = getSiteOrigin();
-  const parentUrl = `${siteUrl}/parent`;
+  const adminUrl = `${siteUrl}/login`;
   const teacherUrl = `${siteUrl}/teacher`;
+  const parentUrl = `${siteUrl}/parent`;
 
-  const [installModal, setInstallModal] = useState<"parent" | "teacher" | null>(null);
+  const [installModal, setInstallModal] = useState<AppRole | null>(null);
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [isStandalone, setIsStandalone] = useState(false);
   const [isIos, setIsIos] = useState(false);
+  const [isAndroid, setIsAndroid] = useState(false);
+  const [isDesktop, setIsDesktop] = useState(false);
+  const [installStatus, setInstallStatus] = useState<Record<AppRole, InstallStatus>>({
+    admin: "available",
+    teacher: "available",
+    parent: "available",
+  });
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+
     const ua = window.navigator.userAgent.toLowerCase();
-    setIsIos(/iphone|ipad|ipod/.test(ua));
+    const iosDevice =
+      /iphone|ipad|ipod/.test(ua) ||
+      (window.navigator.platform === "MacIntel" && window.navigator.maxTouchPoints > 1);
+    const androidDevice = /android/.test(ua);
+    const standaloneMode =
+      window.matchMedia("(display-mode: standalone)").matches ||
+      Boolean((navigator as unknown as { standalone?: boolean }).standalone);
+
+    setIsIos(iosDevice);
+    setIsAndroid(androidDevice);
+    setIsDesktop(!iosDevice && !androidDevice);
+    setIsStandalone(standaloneMode);
+
+    if (standaloneMode) {
+      setInstallStatus({
+        admin: "already_installed",
+        teacher: "already_installed",
+        parent: "already_installed",
+      });
+    }
 
     const handleBeforeInstall = (e: Event) => {
       e.preventDefault();
       setDeferredPrompt(e as BeforeInstallPromptEvent);
     };
+
+    const handleAppInstalled = () => {
+      setDeferredPrompt(null);
+      setIsStandalone(true);
+      setInstallStatus({
+        admin: "successful",
+        teacher: "successful",
+        parent: "successful",
+      });
+    };
+
     window.addEventListener("beforeinstallprompt", handleBeforeInstall);
-    return () => window.removeEventListener("beforeinstallprompt", handleBeforeInstall);
+    window.addEventListener("appinstalled", handleAppInstalled);
+
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handleBeforeInstall);
+      window.removeEventListener("appinstalled", handleAppInstalled);
+    };
   }, []);
 
-  async function triggerInstall(type: "parent" | "teacher") {
-    if (deferredPrompt) {
-      await deferredPrompt.prompt();
-      await deferredPrompt.userChoice;
-      setDeferredPrompt(null);
+  async function triggerInstall(type: AppRole) {
+    if (isStandalone) {
+      setInstallStatus((prev) => ({ ...prev, [type]: "already_installed" }));
+      setInstallModal(type);
+      return;
+    }
+
+    if (type === "admin" && deferredPrompt) {
+      setInstallStatus((prev) => ({ ...prev, [type]: "in_progress" }));
+      try {
+        await deferredPrompt.prompt();
+        const choice = await deferredPrompt.userChoice;
+        if (choice.outcome === "accepted") {
+          setInstallStatus((prev) => ({ ...prev, [type]: "successful" }));
+          setIsStandalone(true);
+        } else {
+          setInstallStatus((prev) => ({ ...prev, [type]: "dismissed" }));
+        }
+        setDeferredPrompt(null);
+      } catch {
+        setInstallStatus((prev) => ({ ...prev, [type]: "instructions_required" }));
+        setInstallModal(type);
+      }
     } else {
+      setInstallStatus((prev) => ({ ...prev, [type]: "instructions_required" }));
       setInstallModal(type);
     }
   }
 
-  const parentFeatures = [
-    "Track your child’s attendance.",
-    "View examination results.",
-    "Check homework and assignments.",
-    "View fee details and payment history.",
-    "Receive school announcements.",
-    "Access your child’s timetable.",
-    "View academic reports.",
+  const adminFeatures = [
+    "Real-time fee collections & cash book",
+    "Student admissions & life-cycle tracking",
+    "Teacher assignments & payroll control",
+    "Automated timetable & exam management",
+    "Official CBSE / State report card generation",
+    "Multi-role security & school data isolation",
   ];
 
   const teacherFeatures = [
-    "Manage assigned classes.",
-    "Mark student attendance.",
-    "Upload assignments and study materials.",
-    "Enter examination marks.",
-    "Access class timetables.",
-    "View student academic performance.",
-    "Receive school notifications.",
+    "Manage assigned classes and sections",
+    "Mark daily student attendance rapidly",
+    "Upload homework and study assignments",
+    "Enter unit test and term exam marks",
+    "Instant access to class weekly timetables",
+    "Receive official administrative broadcasts",
+  ];
+
+  const parentFeatures = [
+    "Track your child’s daily attendance live",
+    "View term exam results and report cards",
+    "Check homework and upcoming submissions",
+    "View fee balances and payment history",
+    "Direct school notifications and notices",
+    "Access your child’s weekly timetable",
   ];
 
   return (
     <section id="download-apps" className="relative px-5 py-24 sm:py-32">
       {/* Background Ambience */}
       <div className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
-        <div className="absolute left-1/4 top-1/3 size-[520px] -translate-x-1/2 rounded-full bg-blue-400/10 blur-[130px]" />
+        <div className="absolute left-1/4 top-1/4 size-[520px] -translate-x-1/2 rounded-full bg-blue-400/10 blur-[130px]" />
         <div className="absolute right-1/4 top-1/2 size-[560px] translate-x-1/2 rounded-full bg-violet-400/10 blur-[140px]" />
       </div>
 
@@ -131,113 +220,46 @@ export function AppDownloadSection() {
           <h2 className="mt-5 text-3xl font-extrabold tracking-tight text-[#111a35] sm:text-5xl lg:text-6xl">
             Everything Your School Needs. <br className="hidden sm:inline" />
             <span className="bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 bg-clip-text text-transparent">
-              Everyone Connected.
+              Dedicated Apps for Every Role.
             </span>
           </h2>
 
           <p className="mt-5 text-base leading-relaxed text-slate-600 sm:text-lg">
-            Stay connected with your school from anywhere. Download the EduLedger Parent and Teacher Apps for a smarter school experience.
+            EduLedger delivers three distinct Progressive Web App experiences optimized for school administrators, teachers, and parents across Android, iPhone, iPad, Windows, and macOS.
           </p>
         </div>
 
-        {/* 2 Premium Application Cards */}
-        <div className="mt-16 grid grid-cols-1 gap-8 lg:grid-cols-2 lg:gap-10">
-          {/* CARD 1: EDULEDGER PARENT APP */}
-          <div className="group relative flex flex-col justify-between overflow-hidden rounded-[36px] border border-blue-100 bg-white p-7 shadow-[0_30px_90px_-40px_rgba(37,99,235,.2)] transition-all duration-300 hover:-translate-y-1 hover:border-blue-200 hover:shadow-[0_40px_110px_-35px_rgba(37,99,235,.28)] sm:p-10">
-            {/* Visual Accent Top Bar */}
-            <div className="absolute inset-x-0 top-0 h-2 bg-gradient-to-r from-blue-500 via-cyan-500 to-emerald-500" />
+        {/* 3 Premium Application Cards */}
+        <div className="mt-16 grid grid-cols-1 gap-8 lg:grid-cols-3 lg:gap-8">
+          {/* CARD 1: EDULEDGER ADMINISTRATOR APP */}
+          <div className="group relative flex flex-col justify-between overflow-hidden rounded-[32px] border border-blue-200/80 bg-white p-6 shadow-[0_25px_80px_-35px_rgba(37,99,235,.2)] transition-all duration-300 hover:-translate-y-1 hover:border-blue-300 hover:shadow-[0_35px_100px_-30px_rgba(37,99,235,.28)] sm:p-8">
+            <div className="absolute inset-x-0 top-0 h-2 bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500" />
 
             <div>
-              {/* Badge & Title */}
               <div className="flex items-center justify-between gap-3">
                 <span className="inline-flex items-center gap-1.5 rounded-xl bg-blue-50 px-3 py-1.5 text-xs font-bold text-blue-700 ring-1 ring-inset ring-blue-700/10">
-                  <GraduationCap className="size-3.5" />
-                  For Parents &amp; Guardians
+                  <ShieldCheck className="size-3.5" />
+                  For School Leadership
                 </span>
                 <span className="rounded-lg bg-slate-100 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-600">
-                  PWA • Android / iOS / Web
+                  Admin PWA
                 </span>
               </div>
 
-              <h3 className="mt-5 text-2xl font-black text-slate-900 sm:text-3xl">
-                EduLedger Parent App
+              <h3 className="mt-5 text-2xl font-black text-slate-900">
+                EduLedger App
               </h3>
 
-              <p className="mt-3 text-sm leading-relaxed text-slate-600 sm:text-base">
-                Stay updated with your child’s academic progress, attendance, homework, examination results, fee payments and important school announcements.
+              <p className="mt-3 text-sm leading-relaxed text-slate-600">
+                Install EduLedger on your device for convenient access to your school’s management dashboard.
               </p>
 
-              {/* Verified School Number Source Badge */}
-              <div className="mt-4 flex items-center gap-2.5 rounded-2xl border border-blue-200 bg-blue-50/80 px-3.5 py-2.5 text-xs font-semibold text-blue-900 shadow-sm">
-                <span className="grid size-5 shrink-0 place-items-center rounded-lg bg-blue-600 text-white">
-                  <Check className="size-3 stroke-[3]" />
-                </span>
-                <span>Parent numbers come from the school&apos;s existing student profiles.</span>
-              </div>
-
-              {/* Mobile Phone Mockup: Parent View */}
-              <div className="relative mx-auto my-8 max-w-[340px] rounded-[38px] border-[6px] border-slate-900 bg-slate-950 p-2.5 shadow-2xl transition duration-500 group-hover:scale-[1.02]">
-                {/* Notch / Speaker */}
-                <div className="absolute left-1/2 top-3 h-3.5 w-24 -translate-x-1/2 rounded-full bg-slate-900" />
-
-                <div className="overflow-hidden rounded-[28px] bg-gradient-to-b from-blue-50/90 to-white p-3.5 pt-6 text-slate-900">
-                  {/* Mockup Header */}
-                  <div className="flex items-center justify-between border-b border-blue-100 pb-2.5">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <div className="grid size-8 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-blue-600 to-indigo-600 text-xs font-black text-white shadow">
-                        AP
-                      </div>
-                      <div className="min-w-0">
-                        <b className="block text-xs font-bold leading-tight text-slate-900 truncate">Aarav Patel</b>
-                        <span className="block text-[10px] text-slate-500 mt-0.5">Class 7-A • Roll #12</span>
-                      </div>
-                    </div>
-                    <span className="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
-                      Present Today
-                    </span>
-                  </div>
-
-                  {/* Mockup Quick Metrics */}
-                  <div className="mt-3 grid grid-cols-2 gap-2">
-                    <div className="rounded-2xl border border-blue-100 bg-white p-2.5 shadow-sm">
-                      <div className="flex items-center justify-between text-[10px] font-bold text-slate-500 mb-1">
-                        <span>Attendance</span>
-                        <CalendarCheck2 className="size-3 text-blue-600" />
-                      </div>
-                      <b className="block text-lg font-black text-blue-700 leading-tight">96.4%</b>
-                      <span className="block text-[9px] text-slate-400 mt-0.5">Term 2 Summary</span>
-                    </div>
-
-                    <div className="rounded-2xl border border-emerald-100 bg-white p-2.5 shadow-sm">
-                      <div className="flex items-center justify-between text-[10px] font-bold text-slate-500 mb-1">
-                        <span>Fee Balance</span>
-                        <ShieldCheck className="size-3 text-emerald-600" />
-                      </div>
-                      <b className="block text-lg font-black text-emerald-700 leading-tight">₹0 Due</b>
-                      <span className="block text-[9px] text-slate-400 mt-0.5">All Invoices Paid</span>
-                    </div>
-                  </div>
-
-                  {/* Mockup Homework Preview */}
-                  <div className="mt-2.5 rounded-2xl border border-slate-100 bg-white p-2.5 shadow-sm">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-[10px] font-bold text-slate-700">Recent Homework</span>
-                      <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[9px] font-bold text-blue-700">Science Lab</span>
-                    </div>
-                    <p className="text-[10px] text-slate-500 leading-tight truncate">
-                      Complete Chapter 5 diagram &amp; botanical summary
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Feature Checklist */}
-              <div className="space-y-2.5 pt-2">
+              <div className="mt-6 space-y-2.5">
                 <span className="text-xs font-extrabold uppercase tracking-wider text-slate-400">
-                  Key Capabilities
+                  Core Management Features
                 </span>
-                <ul className="grid gap-2 sm:grid-cols-2">
-                  {parentFeatures.map((f) => (
+                <ul className="space-y-2">
+                  {adminFeatures.map((f) => (
                     <li key={f} className="flex items-start gap-2 text-xs font-semibold text-slate-700">
                       <span className="mt-0.5 grid size-4 shrink-0 place-items-center rounded-full bg-blue-100 text-blue-700">
                         <Check className="size-2.5 stroke-[3]" />
@@ -249,36 +271,33 @@ export function AppDownloadSection() {
               </div>
             </div>
 
-            {/* Card Footer: CTA & QR Code */}
             <div className="mt-8 border-t border-slate-100 pt-6">
-              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex flex-col gap-2">
-                  <button
-                    type="button"
-                    onClick={() => triggerInstall("parent")}
-                    className="inline-flex items-center justify-center gap-2 rounded-2xl bg-blue-600 px-6 py-3.5 text-sm font-bold text-white shadow-lg shadow-blue-500/25 transition hover:bg-blue-700 active:scale-95"
-                  >
-                    <Download className="size-4" />
-                    <span>Install Parent App</span>
-                  </button>
+              <div className="flex flex-col gap-3">
+                <button
+                  type="button"
+                  onClick={() => triggerInstall("admin")}
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl bg-blue-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-blue-500/25 transition hover:bg-blue-700 active:scale-95"
+                >
+                  <Download className="size-4" />
+                  <span>
+                    {isStandalone ? "Open Installed App" : "Install EduLedger App"}
+                  </span>
+                </button>
 
+                <div className="flex items-center justify-between pt-1">
                   <Link
-                    href="/parent"
-                    className="inline-flex items-center justify-center gap-1.5 text-xs font-bold text-blue-600 hover:text-blue-700 hover:underline"
+                    href="/login"
+                    className="inline-flex items-center gap-1 text-xs font-bold text-blue-600 hover:underline"
                   >
                     <span>Launch in browser</span>
                     <ChevronRight className="size-3" />
                   </Link>
-                </div>
 
-                {/* QR Code */}
-                <div className="flex items-center gap-3 rounded-2xl border border-blue-100 bg-blue-50/50 p-2.5">
-                  <div className="size-16 shrink-0 overflow-hidden rounded-xl border border-white bg-white p-1 shadow-sm">
-                    <QrSvg url={parentUrl} title="Parent Portal" accentColor="#1d4ed8" />
-                  </div>
-                  <div className="flex flex-col justify-center text-[11px] leading-snug">
-                    <b className="font-bold text-slate-900 text-xs">Scan to Open</b>
-                    <span className="text-slate-500 text-[11px] mt-0.5">Scan with your phone to open Parent App</span>
+                  <div className="flex items-center gap-2">
+                    <div className="size-10 shrink-0 overflow-hidden rounded-lg border border-slate-200 bg-white p-0.5 shadow-sm">
+                      <QrSvg url={adminUrl} title="Administrator Portal" accentColor="#1d4ed8" />
+                    </div>
+                    <span className="text-[10px] text-slate-400 font-medium">Scan to open</span>
                   </div>
                 </div>
               </div>
@@ -286,100 +305,33 @@ export function AppDownloadSection() {
           </div>
 
           {/* CARD 2: EDULEDGER TEACHER APP */}
-          <div className="group relative flex flex-col justify-between overflow-hidden rounded-[36px] border border-violet-100 bg-white p-7 shadow-[0_30px_90px_-40px_rgba(124,58,237,.2)] transition-all duration-300 hover:-translate-y-1 hover:border-violet-200 hover:shadow-[0_40px_110px_-35px_rgba(124,58,237,.28)] sm:p-10">
-            {/* Visual Accent Top Bar */}
+          <div className="group relative flex flex-col justify-between overflow-hidden rounded-[32px] border border-violet-200/80 bg-white p-6 shadow-[0_25px_80px_-35px_rgba(124,58,237,.2)] transition-all duration-300 hover:-translate-y-1 hover:border-violet-300 hover:shadow-[0_35px_100px_-30px_rgba(124,58,237,.28)] sm:p-8">
             <div className="absolute inset-x-0 top-0 h-2 bg-gradient-to-r from-violet-600 via-indigo-600 to-purple-600" />
 
             <div>
-              {/* Badge & Title */}
               <div className="flex items-center justify-between gap-3">
                 <span className="inline-flex items-center gap-1.5 rounded-xl bg-violet-50 px-3 py-1.5 text-xs font-bold text-violet-700 ring-1 ring-inset ring-violet-700/10">
                   <BookOpen className="size-3.5" />
                   For Teachers &amp; Faculty
                 </span>
                 <span className="rounded-lg bg-slate-100 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-600">
-                  PWA • Android / iOS / Web
+                  Teacher PWA
                 </span>
               </div>
 
-              <h3 className="mt-5 text-2xl font-black text-slate-900 sm:text-3xl">
-                EduLedger Teacher App
+              <h3 className="mt-5 text-2xl font-black text-slate-900">
+                EduLedger Teacher
               </h3>
 
-              <p className="mt-3 text-sm leading-relaxed text-slate-600 sm:text-base">
-                Manage your classes, mark attendance, share assignments, update examination marks and stay connected with your school.
+              <p className="mt-3 text-sm leading-relaxed text-slate-600">
+                Access your assigned classes, attendance, timetable, assignments, and examination tools.
               </p>
 
-              {/* Verified Faculty Assignment Badge */}
-              <div className="mt-4 flex items-center gap-2.5 rounded-2xl border border-violet-200 bg-violet-50/80 px-3.5 py-2.5 text-xs font-semibold text-violet-900 shadow-sm">
-                <span className="grid size-5 shrink-0 place-items-center rounded-lg bg-violet-600 text-white">
-                  <Check className="size-3 stroke-[3]" />
-                </span>
-                <span>Connected directly to assigned school classes and timetables.</span>
-              </div>
-
-              {/* Mobile Phone Mockup: Teacher View */}
-              <div className="relative mx-auto my-8 max-w-[340px] rounded-[38px] border-[6px] border-slate-900 bg-slate-950 p-2.5 shadow-2xl transition duration-500 group-hover:scale-[1.02]">
-                {/* Notch / Speaker */}
-                <div className="absolute left-1/2 top-3 h-3.5 w-24 -translate-x-1/2 rounded-full bg-slate-900" />
-
-                <div className="overflow-hidden rounded-[28px] bg-gradient-to-b from-violet-50/90 to-white p-3.5 pt-6 text-slate-900">
-                  {/* Mockup Header */}
-                  <div className="flex items-center justify-between border-b border-violet-100 pb-2.5">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <div className="grid size-8 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-violet-600 to-indigo-700 text-xs font-black text-white shadow">
-                        VM
-                      </div>
-                      <div className="min-w-0">
-                        <b className="block text-xs font-bold leading-tight text-slate-900 truncate">Prof. V. Malhotra</b>
-                        <span className="block text-[10px] text-slate-500 mt-0.5">Senior Science • Class 9 &amp; 10</span>
-                      </div>
-                    </div>
-                    <span className="shrink-0 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-bold text-violet-700">
-                      Faculty Active
-                    </span>
-                  </div>
-
-                  {/* Mockup Quick Metrics */}
-                  <div className="mt-3 grid grid-cols-2 gap-2">
-                    <div className="rounded-2xl border border-violet-100 bg-white p-2.5 shadow-sm">
-                      <div className="flex items-center justify-between text-[10px] font-bold text-slate-500 mb-1">
-                        <span>Class 9-A</span>
-                        <CalendarCheck2 className="size-3 text-violet-600" />
-                      </div>
-                      <b className="block text-lg font-black text-violet-700 leading-tight">28 / 30</b>
-                      <span className="block text-[9px] text-slate-400 mt-0.5">Attendance Recorded</span>
-                    </div>
-
-                    <div className="rounded-2xl border border-indigo-100 bg-white p-2.5 shadow-sm">
-                      <div className="flex items-center justify-between text-[10px] font-bold text-slate-500 mb-1">
-                        <span>Next Period</span>
-                        <Clock className="size-3 text-indigo-600" />
-                      </div>
-                      <b className="block text-lg font-black text-indigo-700 leading-tight">09:40 AM</b>
-                      <span className="block text-[9px] text-slate-400 mt-0.5">Physics Lab 1</span>
-                    </div>
-                  </div>
-
-                  {/* Mockup Attendance Action Preview */}
-                  <div className="mt-2.5 rounded-2xl border border-slate-100 bg-white p-2.5 shadow-sm">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-[10px] font-bold text-slate-700">Marks Pending</span>
-                      <span className="rounded bg-violet-100 px-1.5 py-0.5 text-[9px] font-bold text-violet-700">Unit Test II</span>
-                    </div>
-                    <p className="text-[10px] text-slate-500 leading-tight truncate">
-                      Class 10-B: Physics (18 submitted, 12 pending)
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Feature Checklist */}
-              <div className="space-y-2.5 pt-2">
+              <div className="mt-6 space-y-2.5">
                 <span className="text-xs font-extrabold uppercase tracking-wider text-slate-400">
-                  Key Capabilities
+                  Faculty Capabilities
                 </span>
-                <ul className="grid gap-2 sm:grid-cols-2">
+                <ul className="space-y-2">
                   {teacherFeatures.map((f) => (
                     <li key={f} className="flex items-start gap-2 text-xs font-semibold text-slate-700">
                       <span className="mt-0.5 grid size-4 shrink-0 place-items-center rounded-full bg-violet-100 text-violet-700">
@@ -392,36 +344,102 @@ export function AppDownloadSection() {
               </div>
             </div>
 
-            {/* Card Footer: CTA & QR Code */}
             <div className="mt-8 border-t border-slate-100 pt-6">
-              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex flex-col gap-2">
-                  <button
-                    type="button"
-                    onClick={() => triggerInstall("teacher")}
-                    className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-6 py-3.5 text-sm font-bold text-white shadow-lg shadow-violet-500/25 transition hover:from-violet-700 hover:to-indigo-700 active:scale-95"
-                  >
-                    <Download className="size-4" />
-                    <span>Install Teacher App</span>
-                  </button>
+              <div className="flex flex-col gap-3">
+                <button
+                  type="button"
+                  onClick={() => triggerInstall("teacher")}
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-violet-500/25 transition hover:from-violet-700 hover:to-indigo-700 active:scale-95"
+                >
+                  <Download className="size-4" />
+                  <span>Install Teacher App</span>
+                </button>
 
+                <div className="flex items-center justify-between pt-1">
                   <Link
                     href="/teacher"
-                    className="inline-flex items-center justify-center gap-1.5 text-xs font-bold text-violet-600 hover:text-violet-700 hover:underline"
+                    className="inline-flex items-center gap-1 text-xs font-bold text-violet-600 hover:underline"
                   >
                     <span>Launch in browser</span>
                     <ChevronRight className="size-3" />
                   </Link>
-                </div>
 
-                {/* QR Code */}
-                <div className="flex items-center gap-3 rounded-2xl border border-violet-100 bg-violet-50/50 p-2.5">
-                  <div className="size-16 shrink-0 overflow-hidden rounded-xl border border-white bg-white p-1 shadow-sm">
-                    <QrSvg url={teacherUrl} title="Teacher Portal" accentColor="#6d28d9" />
+                  <div className="flex items-center gap-2">
+                    <div className="size-10 shrink-0 overflow-hidden rounded-lg border border-slate-200 bg-white p-0.5 shadow-sm">
+                      <QrSvg url={teacherUrl} title="Teacher Portal" accentColor="#6d28d9" />
+                    </div>
+                    <span className="text-[10px] text-slate-400 font-medium">Scan to open</span>
                   </div>
-                  <div className="flex flex-col justify-center text-[11px] leading-snug">
-                    <b className="font-bold text-slate-900 text-xs">Scan to Open</b>
-                    <span className="text-slate-500 text-[11px] mt-0.5">Scan with your phone to open Teacher App</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* CARD 3: EDULEDGER PARENT APP */}
+          <div className="group relative flex flex-col justify-between overflow-hidden rounded-[32px] border border-emerald-200/80 bg-white p-6 shadow-[0_25px_80px_-35px_rgba(16,185,129,.2)] transition-all duration-300 hover:-translate-y-1 hover:border-emerald-300 hover:shadow-[0_35px_100px_-30px_rgba(16,185,129,.28)] sm:p-8">
+            <div className="absolute inset-x-0 top-0 h-2 bg-gradient-to-r from-emerald-500 via-teal-600 to-cyan-600" />
+
+            <div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 ring-1 ring-inset ring-emerald-700/10">
+                  <GraduationCap className="size-3.5" />
+                  For Parents &amp; Guardians
+                </span>
+                <span className="rounded-lg bg-slate-100 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-600">
+                  Parent PWA
+                </span>
+              </div>
+
+              <h3 className="mt-5 text-2xl font-black text-slate-900">
+                EduLedger Parent
+              </h3>
+
+              <p className="mt-3 text-sm leading-relaxed text-slate-600">
+                Stay updated with your child’s attendance, examination results, homework, fees, and school announcements.
+              </p>
+
+              <div className="mt-6 space-y-2.5">
+                <span className="text-xs font-extrabold uppercase tracking-wider text-slate-400">
+                  Guardian Capabilities
+                </span>
+                <ul className="space-y-2">
+                  {parentFeatures.map((f) => (
+                    <li key={f} className="flex items-start gap-2 text-xs font-semibold text-slate-700">
+                      <span className="mt-0.5 grid size-4 shrink-0 place-items-center rounded-full bg-emerald-100 text-emerald-700">
+                        <Check className="size-2.5 stroke-[3]" />
+                      </span>
+                      <span>{f}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+
+            <div className="mt-8 border-t border-slate-100 pt-6">
+              <div className="flex flex-col gap-3">
+                <button
+                  type="button"
+                  onClick={() => triggerInstall("parent")}
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-emerald-500/25 transition hover:from-emerald-700 hover:to-teal-700 active:scale-95"
+                >
+                  <Download className="size-4" />
+                  <span>Install Parent App</span>
+                </button>
+
+                <div className="flex items-center justify-between pt-1">
+                  <Link
+                    href="/parent"
+                    className="inline-flex items-center gap-1 text-xs font-bold text-emerald-600 hover:underline"
+                  >
+                    <span>Launch in browser</span>
+                    <ChevronRight className="size-3" />
+                  </Link>
+
+                  <div className="flex items-center gap-2">
+                    <div className="size-10 shrink-0 overflow-hidden rounded-lg border border-slate-200 bg-white p-0.5 shadow-sm">
+                      <QrSvg url={parentUrl} title="Parent Portal" accentColor="#059669" />
+                    </div>
+                    <span className="text-[10px] text-slate-400 font-medium">Scan to open</span>
                   </div>
                 </div>
               </div>
@@ -430,14 +448,14 @@ export function AppDownloadSection() {
         </div>
       </div>
 
-      {/* Installation Helper Modal */}
+      {/* Intelligent Multi-Device Installation Helper Modal */}
       {installModal && (
         <div
           role="dialog"
           aria-modal="true"
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm"
         >
-          <div className="relative w-full max-w-md rounded-3xl border border-slate-100 bg-white p-6 shadow-2xl">
+          <div className="relative w-full max-w-lg rounded-3xl border border-slate-100 bg-white p-6 shadow-2xl">
             <button
               onClick={() => setInstallModal(null)}
               className="absolute right-4 top-4 grid size-8 place-items-center rounded-full text-slate-400 hover:bg-slate-100 hover:text-slate-700"
@@ -448,65 +466,148 @@ export function AppDownloadSection() {
 
             <div className="flex items-center gap-3">
               <span
-                className={`grid size-11 place-items-center rounded-2xl text-white shadow ${
-                  installModal === "parent" ? "bg-blue-600" : "bg-violet-600"
+                className={`grid size-12 place-items-center rounded-2xl text-white shadow ${
+                  installModal === "admin"
+                    ? "bg-blue-600"
+                    : installModal === "teacher"
+                      ? "bg-violet-600"
+                      : "bg-emerald-600"
                 }`}
               >
-                <Smartphone className="size-5" />
+                <Smartphone className="size-6" />
               </span>
               <div>
                 <h3 className="text-lg font-black text-slate-900">
-                  {installModal === "parent" ? "Install EduLedger Parent App" : "Install EduLedger Teacher App"}
+                  {installModal === "admin"
+                    ? "Install EduLedger Administrator App"
+                    : installModal === "teacher"
+                      ? "Install EduLedger Teacher App"
+                      : "Install EduLedger Parent App"}
                 </h3>
-                <p className="text-xs text-slate-500">Instant Progressive Web App (PWA)</p>
+                <p className="text-xs text-slate-500">
+                  Progressive Web Application (PWA) · Device Setup
+                </p>
               </div>
             </div>
 
-            <div className="mt-5 space-y-3.5 text-xs text-slate-600">
+            {/* Installation Status Notification */}
+            <div className="mt-4">
+              {installStatus[installModal] === "already_installed" ? (
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-xs font-semibold text-emerald-800">
+                  <div className="flex items-center gap-2">
+                    <Check className="size-4 text-emerald-600" />
+                    <span>This application is already installed on your device in standalone mode.</span>
+                  </div>
+                </div>
+              ) : installStatus[installModal] === "dismissed" ? (
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+                  <span>Installation prompt was dismissed. You can install anytime using the instructions below.</span>
+                </div>
+              ) : null}
+            </div>
+
+            {/* Device-Specific Instructions */}
+            <div className="mt-4 space-y-4 text-xs text-slate-600">
               {isIos ? (
-                <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
-                  <b className="block font-bold text-amber-900">Apple iOS / Safari Instructions:</b>
-                  <ol className="mt-2 list-decimal space-y-1.5 pl-4 text-amber-800">
-                    <li>Open this page or app URL in <strong>Safari</strong></li>
-                    <li>Tap the <strong>Share</strong> button at the bottom of the screen</li>
-                    <li>Scroll down and select <strong>&quot;Add to Home Screen&quot;</strong></li>
-                    <li>Tap <strong>Add</strong> in the top right corner to install</li>
+                <div className="rounded-2xl border border-blue-200 bg-blue-50/70 p-4">
+                  <b className="block font-bold text-blue-900 text-sm">
+                    Apple iOS / Safari Setup (iPhone &amp; iPad)
+                  </b>
+                  <ol className="mt-3 list-decimal space-y-2 pl-4 text-blue-800">
+                    <li>Open <strong>Safari</strong> on your Apple device.</li>
+                    <li>
+                      Visit{" "}
+                      <strong>
+                        {installModal === "admin"
+                          ? siteUrl
+                          : installModal === "teacher"
+                            ? teacherUrl
+                            : parentUrl}
+                      </strong>
+                    </li>
+                    <li>
+                      Tap the <strong>Share icon</strong> (square with an upward arrow) in the Safari toolbar.
+                    </li>
+                    <li>
+                      Scroll down and tap <strong>&quot;Add to Home Screen&quot;</strong>.
+                    </li>
+                    <li>
+                      Confirm by tapping <strong>&quot;Add&quot;</strong> in the top-right corner.
+                    </li>
+                    <li>
+                      Launch the dedicated EduLedger app directly from your Home Screen.
+                    </li>
+                  </ol>
+                </div>
+              ) : isAndroid ? (
+                <div className="rounded-2xl border border-indigo-200 bg-indigo-50/70 p-4">
+                  <b className="block font-bold text-indigo-900 text-sm">
+                    Android Setup (Google Chrome &amp; Microsoft Edge)
+                  </b>
+                  <ol className="mt-3 list-decimal space-y-2 pl-4 text-indigo-800">
+                    <li>
+                      Navigate to the portal:{" "}
+                      <Link
+                        href={installModal === "admin" ? "/" : installModal === "teacher" ? "/teacher" : "/parent"}
+                        className="font-bold text-indigo-600 underline"
+                      >
+                        {installModal === "admin" ? "/" : installModal === "teacher" ? "/teacher" : "/parent"}
+                      </Link>
+                    </li>
+                    <li>
+                      Tap the browser menu (<strong>⋮</strong> three dots in Chrome or <strong>⋯</strong> in Edge).
+                    </li>
+                    <li>
+                      Select <strong>&quot;Install app&quot;</strong> or <strong>&quot;Add to Home Screen&quot;</strong>.
+                    </li>
+                    <li>
+                      Confirm the installation prompt to add the icon to your app drawer and home screen.
+                    </li>
                   </ol>
                 </div>
               ) : (
-                <div className="rounded-2xl border border-blue-200 bg-blue-50/70 p-4">
-                  <b className="block font-bold text-blue-900">Android &amp; Chrome / Edge Instructions:</b>
-                  <ol className="mt-2 list-decimal space-y-1.5 pl-4 text-blue-800">
-                    <li>Tap your browser’s menu icon (<strong>⋮</strong> or <strong>⋯</strong>)</li>
-                    <li>Select <strong>&quot;Install app&quot;</strong> or <strong>&quot;Add to Home Screen&quot;</strong></li>
-                    <li>Confirm installation to add the app icon directly to your home screen</li>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <b className="block font-bold text-slate-900 text-sm">
+                    Desktop Setup (Windows, macOS, Chrome, Edge)
+                  </b>
+                  <ol className="mt-3 list-decimal space-y-2 pl-4 text-slate-700">
+                    <li>
+                      Open the target portal in Chrome or Edge:{" "}
+                      <strong>
+                        {installModal === "admin" ? "/login" : installModal === "teacher" ? "/teacher" : "/parent"}
+                      </strong>
+                    </li>
+                    <li>
+                      Click the <strong>Install icon</strong> (<Monitor className="inline size-3.5 mx-0.5" />) on the right side of your browser&apos;s address bar.
+                    </li>
+                    <li>
+                      Click <strong>Install</strong> to run EduLedger as a dedicated desktop application.
+                    </li>
                   </ol>
                 </div>
               )}
 
-              {/* Direct QR and Link */}
-              <div className="flex items-center justify-between rounded-2xl border border-slate-100 bg-slate-50 p-3">
+              {/* Direct QR Code & Navigation */}
+              <div className="flex items-center justify-between rounded-2xl border border-slate-100 bg-slate-50 p-3.5">
                 <div className="flex items-center gap-3">
-                  <div className="size-14 overflow-hidden rounded-xl border border-white bg-white p-1 shadow-sm">
+                  <div className="size-16 shrink-0 overflow-hidden rounded-xl border border-white bg-white p-1 shadow-sm">
                     <QrSvg
-                      url={installModal === "parent" ? parentUrl : teacherUrl}
-                      title={installModal === "parent" ? "Parent App" : "Teacher App"}
-                      accentColor={installModal === "parent" ? "#1d4ed8" : "#6d28d9"}
+                      url={installModal === "admin" ? adminUrl : installModal === "teacher" ? teacherUrl : parentUrl}
+                      title={installModal === "admin" ? "Admin Portal" : installModal === "teacher" ? "Teacher Portal" : "Parent Portal"}
+                      accentColor={installModal === "admin" ? "#1d4ed8" : installModal === "teacher" ? "#6d28d9" : "#059669"}
                     />
                   </div>
                   <div>
-                    <b className="block font-bold text-slate-900">Direct Link</b>
-                    <code className="text-[10px] text-slate-500">
-                      {installModal === "parent" ? "/parent" : "/teacher"}
-                    </code>
+                    <b className="block font-bold text-slate-900">Open on Your Phone</b>
+                    <span className="text-[11px] text-slate-500">Scan this QR code with your mobile camera</span>
                   </div>
                 </div>
 
                 <Link
-                  href={installModal === "parent" ? "/parent" : "/teacher"}
-                  className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white transition hover:bg-slate-800"
+                  href={installModal === "admin" ? "/login" : installModal === "teacher" ? "/teacher" : "/parent"}
+                  className="rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-bold text-white shadow transition hover:bg-slate-800"
                 >
-                  Open App
+                  Open Portal
                 </Link>
               </div>
             </div>
