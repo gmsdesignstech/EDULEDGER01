@@ -8,6 +8,7 @@ export default defineConfig({
       "tests/accounting-engine.test.ts",
       "tests/api-response.test.ts",
       "tests/auth-redirect.test.ts",
+      "tests/dashboard-loading-resilience.test.ts",
       "tests/database-environment-separation.test.ts",
       "tests/import-large-file.test.ts",
       "tests/import-schema.test.ts",

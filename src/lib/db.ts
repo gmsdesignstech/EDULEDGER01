@@ -467,12 +467,64 @@ CREATE INDEX IF NOT EXISTS idx_staff_attendance_person ON staff_attendance(insti
   });
   return initializing;
 }
+
+let paymentSchemaPromise: Promise<void> | null = null;
+export async function ensurePaymentSettingsSchema(customDb?: Sql): Promise<void> {
+  if (paymentSchemaPromise) return paymentSchemaPromise;
+  paymentSchemaPromise = (async () => {
+    const db = customDb || (await ready());
+    await db.unsafe(`
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS upi_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS upi_id TEXT NOT NULL DEFAULT '';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS payee_name TEXT NOT NULL DEFAULT '';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS payment_method_name TEXT NOT NULL DEFAULT 'School UPI / QR Code';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS bank_name TEXT NOT NULL DEFAULT '';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS account_number TEXT NOT NULL DEFAULT '';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS ifsc_code TEXT NOT NULL DEFAULT '';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS payment_instructions TEXT NOT NULL DEFAULT '';
+
+      CREATE TABLE IF NOT EXISTS school_qr_payments(
+        id TEXT PRIMARY KEY,
+        institution_id TEXT NOT NULL REFERENCES institutions(id) ON DELETE CASCADE,
+        student_id TEXT NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+        fee_id TEXT NOT NULL REFERENCES fees(id) ON DELETE RESTRICT,
+        amount DOUBLE PRECISION NOT NULL CHECK(amount > 0),
+        utr_number TEXT NOT NULL,
+        payment_date TEXT NOT NULL,
+        screenshot_asset_id TEXT,
+        status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','VERIFIED','REJECTED','REFUNDED')),
+        rejection_reason TEXT NOT NULL DEFAULT '',
+        verified_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+        verified_at TIMESTAMPTZ,
+        payment_id TEXT REFERENCES payments(id) ON DELETE SET NULL,
+        notes TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(institution_id, utr_number)
+      );
+      CREATE INDEX IF NOT EXISTS idx_school_qr_payments_scope ON school_qr_payments(institution_id, status, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_school_qr_payments_student ON school_qr_payments(institution_id, student_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_school_qr_payments_utr ON school_qr_payments(institution_id, utr_number);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_school_qr_payments_utr_upper ON school_qr_payments(institution_id, UPPER(utr_number));
+    `);
+  })().catch((err) => {
+    paymentSchemaPromise = null;
+    throw err;
+  });
+  return paymentSchemaPromise;
+}
+
 async function ready() {
   const sql = connection();
   // Production schema changes are applied explicitly before deployment. Running
   // the full idempotent bootstrap in every new serverless instance adds tens of
   // seconds to cold requests and creates unnecessary DDL contention.
-  if (process.env.NODE_ENV !== "production") await initialize();
+  if (process.env.NODE_ENV !== "production") {
+    await initialize();
+  } else {
+    // Non-blocking background check so payment schema self-heals without delaying production cold requests
+    ensurePaymentSettingsSchema(sql).catch(() => {});
+  }
   return sql;
 }
 export async function databaseHealth() {
@@ -652,9 +704,8 @@ export async function getInstitution(institutionId: string) {
     diseCode: string; website: string; city: string; state: string; pinCode: string;
     principalName: string; registrationNumber: string; affiliation: string; motto: string; schoolType: string;
     feeReceiptTitle: string; feeReceiptSubheader: string; payslipTitle: string; payslipSubheader: string; footerText: string; signatureLabel: string;
-    upiEnabled: boolean; upiId: string; payeeName: string; paymentMethodName: string; bankName: string; accountNumber: string; ifscCode: string; paymentInstructions: string;
   }>(
-    `SELECT i.id,i.name,COALESCE(s.school_address,'') address,COALESCE(s.school_phone,'') phone,COALESCE(s.school_email,'') email,COALESCE(s.logo_url,'') AS "logoUrl",COALESCE(s.academic_year,'2026-2027') AS "academicYear",COALESCE(s.school_code,'') AS "schoolCode",COALESCE(s.dise_code,'') AS "diseCode",COALESCE(s.website,'') website,COALESCE(s.city,'') city,COALESCE(s.state,'') state,COALESCE(s.pin_code,'') AS "pinCode",COALESCE(s.principal_name,'') AS "principalName",COALESCE(s.registration_number,'') AS "registrationNumber",COALESCE(s.affiliation,'') affiliation,COALESCE(s.motto,'') motto,COALESCE(s.school_type,'') AS "schoolType",COALESCE(s.fee_receipt_title,'Fee Payment Receipt') AS "feeReceiptTitle",COALESCE(s.fee_receipt_subheader,'Standard Fee Receipt Template') AS "feeReceiptSubheader",COALESCE(s.payslip_title,'Pay Slip') AS "payslipTitle",COALESCE(s.payslip_subheader,'Standard Pay Slip Template') AS "payslipSubheader",COALESCE(s.footer_text,'') AS "footerText",COALESCE(s.signature_label,'Authorized Signatory') AS "signatureLabel",COALESCE(s.upi_enabled,FALSE) AS "upiEnabled",COALESCE(s.upi_id,'') AS "upiId",COALESCE(s.payee_name,'') AS "payeeName",COALESCE(s.payment_method_name,'School UPI / QR Code') AS "paymentMethodName",COALESCE(s.bank_name,'') AS "bankName",COALESCE(s.account_number,'') AS "accountNumber",COALESCE(s.ifsc_code,'') AS "ifscCode",COALESCE(s.payment_instructions,'') AS "paymentInstructions" FROM institutions i LEFT JOIN settings s ON s.institution_id=i.id WHERE i.id=?`,
+    `SELECT i.id,i.name,COALESCE(s.school_address,'') address,COALESCE(s.school_phone,'') phone,COALESCE(s.school_email,'') email,COALESCE(s.logo_url,'') AS "logoUrl",COALESCE(s.academic_year,'2026-2027') AS "academicYear",COALESCE(s.school_code,'') AS "schoolCode",COALESCE(s.dise_code,'') AS "diseCode",COALESCE(s.website,'') website,COALESCE(s.city,'') city,COALESCE(s.state,'') state,COALESCE(s.pin_code,'') AS "pinCode",COALESCE(s.principal_name,'') AS "principalName",COALESCE(s.registration_number,'') AS "registrationNumber",COALESCE(s.affiliation,'') affiliation,COALESCE(s.motto,'') motto,COALESCE(s.school_type,'') AS "schoolType",COALESCE(s.fee_receipt_title,'Fee Payment Receipt') AS "feeReceiptTitle",COALESCE(s.fee_receipt_subheader,'Standard Fee Receipt Template') AS "feeReceiptSubheader",COALESCE(s.payslip_title,'Pay Slip') AS "payslipTitle",COALESCE(s.payslip_subheader,'Standard Pay Slip Template') AS "payslipSubheader",COALESCE(s.footer_text,'') AS "footerText",COALESCE(s.signature_label,'Authorized Signatory') AS "signatureLabel" FROM institutions i LEFT JOIN settings s ON s.institution_id=i.id WHERE i.id=?`,
     [institutionId],
     await ready(),
   );
@@ -2648,16 +2699,27 @@ export type CompleteSettingsInput = {
 
 export async function getCompleteSettings(institutionId:string) {
   const db=await ready(), institution=await getInstitution(institutionId);
+  const paymentSettings=await getSchoolPaymentSettings(institutionId);
   const years=await rows<{id:string;name:string;startMonth:number;endMonth:number;status:"Active"|"Archived";isActive:boolean}>('SELECT id,name,start_month AS "startMonth",end_month AS "endMonth",status,is_active AS "isActive" FROM academic_years WHERE institution_id=? ORDER BY name DESC',[institutionId],db);
   const classRows=await rows<{id:string;name:string;status:string}>('SELECT id,name,status FROM institution_classes WHERE institution_id=? ORDER BY sort_order,name',[institutionId],db);
   const sectionRows=await rows<{classId:string;name:string}>('SELECT class_id AS "classId",name FROM institution_sections WHERE institution_id=? AND status=\'Active\' ORDER BY sort_order,name',[institutionId],db);
   const assets=await rows<{kind:string}>('SELECT kind FROM school_assets WHERE institution_id=?',[institutionId],db);
   const rollCount=await row<{count:number}>("SELECT COUNT(*)::int count FROM students WHERE institution_id=? AND roll_number<>''",[institutionId],db);
-  return { ...institution, rollCount:rollCount.count, logoUrl:assets.some(x=>x.kind==='logo')?"/api/settings/assets/logo":"", signatureUrl:assets.some(x=>x.kind==='signature')?"/api/settings/assets/signature":"", qrCodeUrl:assets.some(x=>x.kind==='payment-qr')?"/api/settings/assets/payment-qr":"", years, classes:classRows.map(item=>({id:item.id,name:item.name,active:item.status==='Active'&&item.name.trim().toUpperCase()!=="LG",sections:sectionRows.filter(x=>x.classId===item.id).map(x=>x.name)})) };
+  return {
+    ...institution,
+    ...paymentSettings,
+    rollCount:rollCount?.count ?? 0,
+    logoUrl:assets.some(x=>x.kind==='logo')?"/api/settings/assets/logo":"",
+    signatureUrl:assets.some(x=>x.kind==='signature')?"/api/settings/assets/signature":"",
+    qrCodeUrl:paymentSettings.qrCodeUrl || (assets.some(x=>x.kind==='payment-qr')?"/api/settings/assets/payment-qr":""),
+    years,
+    classes:classRows.map(item=>({id:item.id,name:item.name,active:item.status==='Active'&&item.name.trim().toUpperCase()!=="LG",sections:sectionRows.filter(x=>x.classId===item.id).map(x=>x.name)}))
+  };
 }
 
 export async function saveCompleteSettings(institutionId:string,userId:string,input:CompleteSettingsInput){
   const db=await ready();
+  await ensurePaymentSettingsSchema(db);
   await db.begin(async tx=>{
     await run("UPDATE institutions SET name=? WHERE id=?",[input.name,institutionId],tx);
     await run(`INSERT INTO settings(institution_id,academic_year,school_code,school_address,school_phone,school_email,dise_code,website,city,state,pin_code,principal_name,registration_number,affiliation,motto,school_type,fee_receipt_title,fee_receipt_subheader,payslip_title,payslip_subheader,footer_text,signature_label,upi_enabled,upi_id,payee_name,payment_method_name,bank_name,account_number,ifsc_code,payment_instructions) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(institution_id) DO UPDATE SET academic_year=EXCLUDED.academic_year,school_code=EXCLUDED.school_code,school_address=EXCLUDED.school_address,school_phone=EXCLUDED.school_phone,school_email=EXCLUDED.school_email,dise_code=EXCLUDED.dise_code,website=EXCLUDED.website,city=EXCLUDED.city,state=EXCLUDED.state,pin_code=EXCLUDED.pin_code,principal_name=EXCLUDED.principal_name,registration_number=EXCLUDED.registration_number,affiliation=EXCLUDED.affiliation,motto=EXCLUDED.motto,school_type=EXCLUDED.school_type,fee_receipt_title=EXCLUDED.fee_receipt_title,fee_receipt_subheader=EXCLUDED.fee_receipt_subheader,payslip_title=EXCLUDED.payslip_title,payslip_subheader=EXCLUDED.payslip_subheader,footer_text=EXCLUDED.footer_text,signature_label=EXCLUDED.signature_label,upi_enabled=COALESCE(EXCLUDED.upi_enabled,settings.upi_enabled),upi_id=COALESCE(EXCLUDED.upi_id,settings.upi_id),payee_name=COALESCE(EXCLUDED.payee_name,settings.payee_name),payment_method_name=COALESCE(EXCLUDED.payment_method_name,settings.payment_method_name),bank_name=COALESCE(EXCLUDED.bank_name,settings.bank_name),account_number=COALESCE(EXCLUDED.account_number,settings.account_number),ifsc_code=COALESCE(EXCLUDED.ifsc_code,settings.ifsc_code),payment_instructions=COALESCE(EXCLUDED.payment_instructions,settings.payment_instructions),updated_at=CURRENT_TIMESTAMP`,[institutionId,input.academicYear,normalizeSchoolCode(input.schoolCode),input.address,input.phone,input.email,input.diseCode,input.website,input.city,input.state,input.pinCode,input.principalName,input.registrationNumber,input.affiliation,input.motto,input.schoolType,input.feeReceiptTitle,input.feeReceiptSubheader,input.payslipTitle,input.payslipSubheader,input.footerText,input.signatureLabel,input.upiEnabled??null,input.upiId??null,input.payeeName??null,input.paymentMethodName??null,input.bankName??null,input.accountNumber??null,input.ifscCode??null,input.paymentInstructions??null],tx);
@@ -5574,51 +5636,68 @@ export type SchoolPaymentSettings = {
 
 export async function getSchoolPaymentSettings(institutionId: string): Promise<SchoolPaymentSettings> {
   const db = await ready();
-  const rowData = await row<{
-    institutionName: string;
-    upiEnabled: boolean;
-    upiId: string;
-    payeeName: string;
-    paymentMethodName: string;
-    bankName: string;
-    accountNumber: string;
-    ifscCode: string;
-    paymentInstructions: string;
-  }>(
-    `SELECT i.name AS "institutionName",
-            COALESCE(s.upi_enabled, FALSE) AS "upiEnabled",
-            COALESCE(s.upi_id, '') AS "upiId",
-            COALESCE(s.payee_name, '') AS "payeeName",
-            COALESCE(s.payment_method_name, 'School UPI / QR Code') AS "paymentMethodName",
-            COALESCE(s.bank_name, '') AS "bankName",
-            COALESCE(s.account_number, '') AS "accountNumber",
-            COALESCE(s.ifsc_code, '') AS "ifscCode",
-            COALESCE(s.payment_instructions, '') AS "paymentInstructions"
-     FROM institutions i
-     LEFT JOIN settings s ON s.institution_id = i.id
-     WHERE i.id = ?`,
-    [institutionId],
-    db
-  );
+  await ensurePaymentSettingsSchema(db).catch(() => {});
+  try {
+    const rowData = await row<{
+      institutionName: string;
+      upiEnabled: boolean;
+      upiId: string;
+      payeeName: string;
+      paymentMethodName: string;
+      bankName: string;
+      accountNumber: string;
+      ifscCode: string;
+      paymentInstructions: string;
+    }>(
+      `SELECT i.name AS "institutionName",
+              COALESCE(s.upi_enabled, FALSE) AS "upiEnabled",
+              COALESCE(s.upi_id, '') AS "upiId",
+              COALESCE(s.payee_name, '') AS "payeeName",
+              COALESCE(s.payment_method_name, 'School UPI / QR Code') AS "paymentMethodName",
+              COALESCE(s.bank_name, '') AS "bankName",
+              COALESCE(s.account_number, '') AS "accountNumber",
+              COALESCE(s.ifsc_code, '') AS "ifscCode",
+              COALESCE(s.payment_instructions, '') AS "paymentInstructions"
+       FROM institutions i
+       LEFT JOIN settings s ON s.institution_id = i.id
+       WHERE i.id = ?`,
+      [institutionId],
+      db
+    );
 
-  const assets = await rows<{ kind: string }>(
-    `SELECT kind FROM school_assets WHERE institution_id = ? AND kind = 'payment-qr'`,
-    [institutionId],
-    db
-  );
+    const assets = await rows<{ kind: string }>(
+      `SELECT kind FROM school_assets WHERE institution_id = ? AND kind = 'payment-qr'`,
+      [institutionId],
+      db
+    );
 
-  return {
-    institutionName: rowData?.institutionName || "",
-    upiEnabled: Boolean(rowData?.upiEnabled),
-    upiId: rowData?.upiId || "",
-    payeeName: rowData?.payeeName || rowData?.institutionName || "",
-    paymentMethodName: rowData?.paymentMethodName || "School UPI / QR Code",
-    bankName: rowData?.bankName || "",
-    accountNumber: rowData?.accountNumber || "",
-    ifscCode: rowData?.ifscCode || "",
-    paymentInstructions: rowData?.paymentInstructions || "",
-    qrCodeUrl: assets.length > 0 ? `/api/settings/assets/payment-qr` : "",
-  };
+    return {
+      institutionName: rowData?.institutionName || "",
+      upiEnabled: Boolean(rowData?.upiEnabled),
+      upiId: rowData?.upiId || "",
+      payeeName: rowData?.payeeName || rowData?.institutionName || "",
+      paymentMethodName: rowData?.paymentMethodName || "School UPI / QR Code",
+      bankName: rowData?.bankName || "",
+      accountNumber: rowData?.accountNumber || "",
+      ifscCode: rowData?.ifscCode || "",
+      paymentInstructions: rowData?.paymentInstructions || "",
+      qrCodeUrl: assets.length > 0 ? `/api/settings/assets/payment-qr` : "",
+    };
+  } catch {
+    const inst = await row<{ name: string }>("SELECT name FROM institutions WHERE id = ?", [institutionId], db).catch(() => null);
+    return {
+      institutionName: inst?.name || "",
+      upiEnabled: false,
+      upiId: "",
+      payeeName: inst?.name || "",
+      paymentMethodName: "School UPI / QR Code",
+      bankName: "",
+      accountNumber: "",
+      ifscCode: "",
+      paymentInstructions: "",
+      qrCodeUrl: "",
+    };
+  }
 }
 
 export async function saveSchoolPaymentSettings(
@@ -5636,6 +5715,7 @@ export async function saveSchoolPaymentSettings(
   }
 ): Promise<SchoolPaymentSettings> {
   const db = await ready();
+  await ensurePaymentSettingsSchema(db);
   await db.begin(async (tx) => {
     await run(
       `INSERT INTO settings(
@@ -5686,6 +5766,7 @@ export async function submitSchoolQrPayment(
   input: SchoolQrPaymentSubmission
 ) {
   const db = await ready();
+  await ensurePaymentSettingsSchema(db);
   const cleanUtr = input.utrNumber.trim();
   if (!cleanUtr || cleanUtr.length < 4 || cleanUtr.length > 50) {
     throw new Error("Enter a valid UTR or UPI transaction reference number.");
@@ -5793,6 +5874,7 @@ export async function listSchoolQrPayments(
   }
 ) {
   const db = await ready();
+  await ensurePaymentSettingsSchema(db);
   const where: string[] = ["qp.institution_id = ?"];
   const args: unknown[] = [institutionId];
 
@@ -5899,6 +5981,7 @@ export async function listSchoolQrPayments(
 
 export async function getSchoolQrPayment(institutionId: string, paymentId: string) {
   const db = await ready();
+  await ensurePaymentSettingsSchema(db);
   return await row<{
     id: string;
     studentId: string;
@@ -5969,6 +6052,7 @@ export async function verifySchoolQrPayment(
   let resultReceiptNumber = "";
   let paymentRecordId = "";
 
+  await ensurePaymentSettingsSchema();
   await connection().begin(async (tx) => {
     // 1. Lock QR payment row
     const qrRow = await row<{
@@ -6190,6 +6274,7 @@ export async function rejectSchoolQrPayment(
     throw new Error("A rejection reason is required.");
   }
 
+  await ensurePaymentSettingsSchema();
   await connection().begin(async (tx) => {
     const qrRow = await row<{ id: string; status: string; studentId: string; utrNumber: string }>(
       `SELECT id, status, student_id AS "studentId", utr_number AS "utrNumber"
@@ -6239,6 +6324,7 @@ export async function refundSchoolQrPayment(
   paymentId: string,
   reason: string
 ) {
+  await ensurePaymentSettingsSchema();
   await connection().begin(async (tx) => {
     const qrRow = await row<{
       id: string;
@@ -6324,6 +6410,7 @@ export async function refundSchoolQrPayment(
 
 export async function getSchoolQrPaymentScreenshot(institutionId: string, paymentId: string) {
   const db = await ready();
+  await ensurePaymentSettingsSchema(db);
   const payment = await row<{ screenshotAssetId: string | null }>(
     `SELECT screenshot_asset_id AS "screenshotAssetId" FROM school_qr_payments WHERE institution_id = ? AND id = ?`,
     [institutionId, paymentId],
