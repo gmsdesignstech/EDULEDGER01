@@ -6,6 +6,8 @@ import { roleHome, safeTeacherRedirect } from "@/lib/auth-redirect";
 
 export const metadata: Metadata = {
   title: "Teacher Sign In | EduLedger",
+  manifest: "/manifest-teacher.webmanifest",
+  appleWebApp: { capable: true, statusBarStyle: "default", title: "Teacher Portal" },
   robots: { index: false, follow: false },
 };
 

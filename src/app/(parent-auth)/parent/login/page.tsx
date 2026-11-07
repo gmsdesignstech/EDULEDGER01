@@ -6,6 +6,8 @@ import { roleHome, safeParentRedirect } from "@/lib/auth-redirect";
 
 export const metadata: Metadata = {
   title: "Parent Sign In | EduLedger",
+  manifest: "/manifest-parent.webmanifest",
+  appleWebApp: { capable: true, statusBarStyle: "default", title: "Parent Portal" },
   robots: { index: false, follow: false },
 };
 

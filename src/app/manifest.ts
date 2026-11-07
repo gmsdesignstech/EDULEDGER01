@@ -2,6 +2,7 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
+    id: "/",
     name: "EduLedger",
     short_name: "EduLedger",
     description: "School management for students, staff, attendance, fees, academics, and parent communication.",

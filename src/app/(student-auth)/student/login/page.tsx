@@ -6,6 +6,8 @@ import { roleHome, safeStudentRedirect } from "@/lib/auth-redirect";
 
 export const metadata: Metadata = {
   title: "Student Sign In | EduLedger",
+  manifest: "/manifest-student.webmanifest",
+  appleWebApp: { capable: true, statusBarStyle: "default", title: "Student Portal" },
   robots: { index: false, follow: false },
 };
 

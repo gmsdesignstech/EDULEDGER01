@@ -10,6 +10,7 @@ describe("EduLedger Complete PWA Installation, Device Support & Diagnostics Suit
   describe("Phase 2 & 3: Three Distinct Installable Application Identities", () => {
     it("provides the Administrator application manifest with root scope", () => {
       const data = mainManifest();
+      expect(data.id).toBe("/");
       expect(data.name).toBe("EduLedger");
       expect(data.short_name).toBe("EduLedger");
       expect(data.start_url).toBe("/");
@@ -23,6 +24,7 @@ describe("EduLedger Complete PWA Installation, Device Support & Diagnostics Suit
       const res = await teacherManifestHandler();
       expect(res.status).toBe(200);
       const data = await res.json();
+      expect(data.id).toBe("/teacher");
       expect(data.name).toBe("EduLedger - Teacher Portal");
       expect(data.short_name).toBe("EduLedger Teacher");
       expect(data.start_url).toBe("/teacher");
@@ -34,6 +36,7 @@ describe("EduLedger Complete PWA Installation, Device Support & Diagnostics Suit
       const res = await parentManifestHandler();
       expect(res.status).toBe(200);
       const data = await res.json();
+      expect(data.id).toBe("/parent");
       expect(data.name).toBe("EduLedger - Parent Portal");
       expect(data.short_name).toBe("EduLedger Parent");
       expect(data.start_url).toBe("/parent");

@@ -4,6 +4,7 @@ export const runtime = "nodejs";
 
 export async function GET() {
   return NextResponse.json({
+    id: "/student",
     name: "EduLedger - Student Portal",
     short_name: "Student Portal",
     description: "EduLedger Student Portal for a student's own academic information.",
