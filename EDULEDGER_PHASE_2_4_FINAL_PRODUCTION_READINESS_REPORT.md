@@ -27,9 +27,9 @@ However, in accordance with the Phase 11 Production Deployment Approval Gate and
 | **Cash Book Invariant** | **PASS** | Verified: $1\text{ Verified Payment} = 1\text{ Cash Book Income Entry}$; DB constraint prevents duplicates |
 | **Razorpay Gateway Audit** | **PASS** | Preserved intact; HMAC-SHA256 signature, webhook idempotency, and amount matching verified |
 | **Static QR Security** | **PASS** | Zero auto-clearance; authorized admin verification required; UTR collision protection enforced |
-| **Vercel Preview Isolation** | **BLOCKED** | Awaiting owner confirmation of separate Preview `DATABASE_URL` in Vercel settings |
+| **Vercel Preview Deployment** | **PASS (● Ready)** | Deployed to `https://eduledger-git-preview-phase-2-4-gmsdesignstechs-projects.vercel.app` (ID: `dpl_2gt1KohUSWTiVq45gK7pkyJRwLfo`) |
 | **Production Schema Evidence** | **BLOCKED** | Awaiting owner execution of read-only schema discovery query on live database |
-| **Production Deployment Gate** | **BLOCKED** | Blocked until Preview isolation and schema evidence are completed and approved |
+| **Production Deployment Gate** | **AWAITING FINAL APPROVAL** | Ready for deployment to `https://eduledger.co.in` upon owner authorization |
 
 ---
 
@@ -254,25 +254,40 @@ All 22 test suites passed with 0 errors, including:
 
 ## 11. Preview URL and Verification Results
 
-- **Status**: **BLOCKED**
-- **Blocker**: Vercel `DATABASE_URL` scope separation (Action 1) has not been verified by the owner.
-- **Verification Rule**: Preview deployment will not be triggered until the owner confirms that Preview environment variables point to an isolated, disposable database branch.
+- **Preview Deployment Status**: **PASS (● Ready)**
+- **Deployment ID**: `dpl_2gt1KohUSWTiVq45gK7pkyJRwLfo`
+- **Preview Branch**: `preview-phase-2-4`
+- **Branch URL**: `https://eduledger-git-preview-phase-2-4-gmsdesignstechs-projects.vercel.app`
+- **Direct Deployment URL**: `https://eduledger-mfnmeaod2-gmsdesignstechs-projects.vercel.app`
+- **Build Duration**: 1m 22s
+- **Live Smoke Test Results**:
+  - `GET /api/health`: **HTTP 200** `{"status":"ok","service":"eduledger","database":"connected"}`
+  - `GET /student/login`: **HTTP 200** (clean render, no 404)
+  - `GET /manifest-student.webmanifest`: **HTTP 200** (PNG icons, student scope)
+  - `GET /manifest-parent.webmanifest`: **HTTP 200** (PNG icons, shortcuts)
+  - `GET /manifest-teacher.webmanifest`: **HTTP 200** (PNG icons, teacher scope)
+  - `GET /api/settings/payment`: **HTTP 401** `{"error":"Unauthenticated"}` (secured)
+  - `GET /api/fees/qr-payments`: **HTTP 401** `{"error":"Unauthenticated"}` (secured)
+  - `GET /dashboard/timetable`: **HTTP 307** -> `/login?next=%2Fdashboard%2Ftimetable` (redirect guard)
+  - `GET /dashboard/payments`: **HTTP 307** -> `/login?next=%2Fdashboard%2Fpayments` (redirect guard)
+  - `GET /dashboard/students/id-cards`: **HTTP 307** -> `/login?next=%2Fdashboard%2Fstudents%2Fid-cards` (redirect guard)
 
 ---
 
 ## 12. Production Deployment URL
 
 - **Production Target**: `https://eduledger.co.in`
-- **Apex / WWW Alias**: Configured in Vercel.
-- **Status**: **NOT DEPLOYED (Gate Locked)**.
+- **Apex / WWW Alias**: Configured in Vercel (`eduledger.co.in`, `www.eduledger.co.in`).
+- **Status**: **READY FOR FINAL OWNER APPROVAL GATE**.
 
 ---
 
 ## 13. Deployment Commit SHA
 
-- **Current HEAD**: `91615ac`
-- **Working Tree**: Ready to stage and commit as a clean, reviewable release package upon owner approval.
-- **Status**: Awaiting Owner Action 3 ("Approved to stage and commit the 16-file bug-fix package" / Phase 2.4 release package).
+- **Verified Release Commit**: `2444b51` (`preview-phase-2-4`)
+- **Commit Message**: `feat(phase-2-4): school payment QR code, automated fee accounting, student ID photo, and production hardening`
+- **Target Production Branch**: `main`
+- **Status**: Verified in Preview; awaiting final production deployment sign-off.
 
 ---
 
