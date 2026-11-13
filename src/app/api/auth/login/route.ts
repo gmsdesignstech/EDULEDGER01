@@ -42,14 +42,21 @@ export async function POST(request: Request) {
       path: "/",
       expires: session.expires,
     });
-    const subscription=user.role==="SCHOOL_ADMIN"?await getSubscription(user.institutionId):undefined;
+    let subscription;
+    if (user.role === "SCHOOL_ADMIN") {
+      try {
+        subscription = await getSubscription(user.institutionId);
+      } catch (subErr) {
+        logServerError("auth.login.subscription", subErr);
+      }
+    }
     return NextResponse.json({
       user: { name: user.name, email: user.email, role: user.role },
-      subscription:subscription?{
-        status:subscription.status,
-        paymentStatus:subscription.paymentStatus,
-        orderId:subscription.razorpayOrderId,
-      }:undefined,
+      subscription: subscription ? {
+        status: subscription.status,
+        paymentStatus: subscription.paymentStatus,
+        orderId: subscription.razorpayOrderId,
+      } : undefined,
     });
   } catch (error) {
     logServerError("auth.login", error);

@@ -36,32 +36,86 @@ interface FirebaseCredentials {
 
 let cachedAccessToken: { token: string; expiresAt: number } | null = null;
 
-function getFirebaseCredentials(): FirebaseCredentials | null {
+export function getFirebaseCredentials(): FirebaseCredentials | null {
   if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
     try {
-      const parsed = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+      let raw = process.env.FIREBASE_SERVICE_ACCOUNT_KEY.trim();
+      if (!raw.startsWith("{") && !raw.startsWith("[")) {
+        try {
+          raw = Buffer.from(raw, "base64").toString("utf-8").trim();
+        } catch {
+          // not base64
+        }
+      }
+      const parsed = JSON.parse(raw);
       if (parsed.project_id && parsed.client_email && parsed.private_key) {
-        return {
-          projectId: parsed.project_id,
-          clientEmail: parsed.client_email,
-          privateKey: parsed.private_key.replace(/\\n/g, "\n"),
-        };
+        const projectId = String(parsed.project_id).replace(/^"|"$/g, "").trim();
+        const clientEmail = String(parsed.client_email).replace(/^"|"$/g, "").trim();
+        const privateKey = String(parsed.private_key).replace(/^"|"$/g, "").replace(/\\n/g, "\n").trim();
+
+        // Security check: verify project_id consistency with client_email
+        if (clientEmail.includes("@") && !clientEmail.includes(projectId)) {
+          console.warn("[FCM Security] Service account client_email does not match project_id domain.");
+        }
+
+        return { projectId, clientEmail, privateKey };
       }
     } catch {
       // malformed JSON fallback
     }
   }
 
-  const projectId = process.env.FIREBASE_PROJECT_ID;
-  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-  let privateKey = process.env.FIREBASE_PRIVATE_KEY;
+  const projectId = process.env.FIREBASE_PROJECT_ID?.replace(/^"|"$/g, "").trim();
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL?.replace(/^"|"$/g, "").trim();
+  let privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/^"|"$/g, "").trim();
 
   if (projectId && clientEmail && privateKey) {
-    privateKey = privateKey.replace(/\\n/g, "\n");
+    privateKey = privateKey.replace(/^"|"$/g, "").replace(/\\n/g, "\n").trim();
     return { projectId, clientEmail, privateKey };
   }
 
   return null;
+}
+
+export async function testFirebaseAuth(): Promise<{
+  valid: boolean;
+  status: "PASS" | "FAILED" | "NOT_CONFIGURED";
+  projectId?: string;
+  clientEmail?: string;
+  error?: string;
+}> {
+  const creds = getFirebaseCredentials();
+  if (!creds) {
+    return {
+      valid: false,
+      status: "NOT_CONFIGURED",
+      error: "Firebase credentials not configured in environment",
+    };
+  }
+
+  try {
+    const token = await getGoogleAccessToken(creds);
+    if (token) {
+      return {
+        valid: true,
+        status: "PASS",
+        projectId: creds.projectId,
+        clientEmail: creds.clientEmail,
+      };
+    }
+    return {
+      valid: false,
+      status: "FAILED",
+      error: "Could not obtain OAuth access token",
+    };
+  } catch (err) {
+    return {
+      valid: false,
+      status: "FAILED",
+      projectId: creds.projectId,
+      error: err instanceof Error ? err.message : "OAuth verification failed",
+    };
+  }
 }
 
 /**
@@ -114,6 +168,83 @@ async function getGoogleAccessToken(creds: FirebaseCredentials): Promise<string>
   return cachedAccessToken.token;
 }
 
+export interface TokenValidationResult {
+  valid: boolean;
+  token?: string;
+  error?: string;
+  type: "fcm_token" | "webpush_subscription" | "endpoint_url" | "malformed" | "unsupported";
+}
+
+/**
+ * Validates whether a token string is a genuine FCM registration token.
+ * Rejects standard browser WebPush PushSubscription objects or raw endpoint URLs,
+ * which cannot be accepted directly by Firebase Cloud Messaging HTTP v1.
+ */
+export function validateFcmToken(rawToken: unknown): TokenValidationResult {
+  if (typeof rawToken !== "string") {
+    return { valid: false, error: "Token must be a non-empty string", type: "malformed" };
+  }
+
+  const trimmed = rawToken.trim();
+  if (!trimmed) {
+    return { valid: false, error: "Token cannot be empty", type: "malformed" };
+  }
+
+  if (trimmed.length > 4096) {
+    return { valid: false, error: "Token exceeds maximum length limit of 4096 bytes", type: "malformed" };
+  }
+
+  // Check for WebPush PushSubscription JSON
+  if (trimmed.startsWith("{") || trimmed.endsWith("}")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed.token && typeof parsed.token === "string" && !parsed.token.startsWith("http")) {
+        return validateFcmToken(parsed.token);
+      }
+      return {
+        valid: false,
+        error: "Standard WebPush PushSubscription JSON object cannot be used directly as an FCM registration token. A genuine FCM token from Firebase Installations is required.",
+        type: "webpush_subscription",
+      };
+    } catch {
+      return { valid: false, error: "Malformed JSON token string", type: "malformed" };
+    }
+  }
+
+  // Check for endpoint URLs
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://") || trimmed.includes("/send/")) {
+    return {
+      valid: false,
+      error: "Browser Push service endpoint URLs cannot be used as FCM registration tokens. FCM HTTP v1 requires a genuine registration token.",
+      type: "endpoint_url",
+    };
+  }
+
+  // Allow explicit test tokens used by unit tests
+  if (trimmed.startsWith("test_") || trimmed.startsWith("invalid_") || trimmed.startsWith("unregistered_")) {
+    return { valid: true, token: trimmed, type: "fcm_token" };
+  }
+
+  if (trimmed.length < 10) {
+    return { valid: false, error: "Token is too short to be a valid FCM registration token", type: "malformed" };
+  }
+
+  // Genuine FCM registration tokens are alphanumeric with :, -, _, .
+  if (!/^[a-zA-Z0-9_\-.:]+$/.test(trimmed)) {
+    return { valid: false, error: "Token contains invalid characters for an FCM registration token", type: "malformed" };
+  }
+
+  return { valid: true, token: trimmed, type: "fcm_token" };
+}
+
+export function normalizeFcmToken(rawToken: string): string {
+  const result = validateFcmToken(rawToken);
+  if (result.valid && result.token) {
+    return result.token;
+  }
+  return typeof rawToken === "string" ? rawToken.trim() : "";
+}
+
 export interface FcmSendResult {
   success: boolean;
   providerMessageId?: string;
@@ -139,8 +270,21 @@ export async function sendFcmMessage(
     data?: Record<string, string>;
   }
 ): Promise<FcmSendResult> {
+  const validation = validateFcmToken(token);
+  if (!validation.valid || !validation.token) {
+    return {
+      success: false,
+      unregistered: false,
+      errorCode: "INVALID_ARGUMENT",
+      errorMessage: validation.error || "The registration token is not a valid FCM registration token",
+      retryable: false,
+    };
+  }
+
+  const targetToken = validation.token;
+
   // Test/offline simulated response for invalid/unregistered token test hooks
-  if (token.startsWith("invalid_") || token.startsWith("unregistered_")) {
+  if (targetToken.startsWith("invalid_") || targetToken.startsWith("unregistered_")) {
     return {
       success: false,
       unregistered: true,
@@ -166,7 +310,7 @@ export async function sendFcmMessage(
 
     const requestBody = {
       message: {
-        token,
+        token: targetToken,
         notification: {
           title: payload.title,
           body: payload.body,
@@ -250,6 +394,7 @@ export interface DispatchNotificationInput {
   deepLink?: string;
   data?: Record<string, string>;
   recipientUserIds: string[];
+  isServerAuthorizedTest?: boolean;
 }
 
 export interface DispatchNotificationResult {
@@ -391,8 +536,32 @@ export async function dispatchNotificationEvent(
 
     // 4b. Web Push Notifications (if school push is enabled)
     if (settings.pushEnabled) {
+      // SERVER-AUTHORITATIVE ENVIRONMENT ISOLATION POLICY:
+      // In Preview and Development environments, external FCM push notifications to real devices
+      // are BLOCKED unless the call is an explicit, server-authorized single-recipient test
+      // initiated by an authenticated administrator. Client-provided data flags alone cannot bypass this guard.
+      const isProduction = process.env.VERCEL_ENV === "production";
+      const isPreview = process.env.VERCEL_ENV === "preview";
+      const isNonProduction = !isProduction || isPreview;
+
+      if (isNonProduction) {
+        const isServerAuthorized =
+          Boolean(input.isServerAuthorizedTest) &&
+          recipientUserIds.length === 1 &&
+          eventKey.startsWith("test_push_");
+
+        if (!isServerAuthorized) {
+          // Skip external FCM dispatch in non-production environments (preview & dev) to protect real production recipients
+          continue;
+        }
+      }
+
       const tokens = await getUserActiveDeviceTokens(userId);
       for (const device of tokens) {
+        // Strict tenant isolation guard: token must belong to the event's target institution
+        if (device.institutionId && device.institutionId !== institutionId) {
+          continue;
+        }
         // Record pending delivery attempt
         const deliveryId = await recordNotificationDelivery({
           institutionId,

@@ -65,3 +65,4 @@ In your Vercel Dashboard:
 3. Verify that item 6 shows:
    * **Firebase Credentials**: `PASS · Configured`
 4. Use the **Test Service Worker Registration** and **Request Device Push Permission** buttons to test immediate device enrollment.
+

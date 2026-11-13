@@ -46,3 +46,4 @@
   - `npm run lint` $\rightarrow$ **0 warnings, 0 errors**
   - `vitest` $\rightarrow$ **223 passed (24 suites)**
   - `next build` $\rightarrow$ **147/147 static & dynamic pages successfully generated**
+

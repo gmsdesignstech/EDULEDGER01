@@ -25,10 +25,12 @@ import {
   WifiOff,
   XCircle,
 } from "lucide-react";
+import { requestClientFcmToken } from "@/lib/firebase-client";
 
 type ServerDiagnostics = {
   timestamp: string;
   institutionId: string;
+  environment?: string;
   pwa: {
     status: string;
     scope: string;
@@ -40,17 +42,25 @@ type ServerDiagnostics = {
     offlineFallbackUrl: string;
   };
   firebase: {
-    status: "PASS" | "WARNING" | "FAILED" | "NOT CONFIGURED";
+    status: "READY" | "BLOCKED" | "NOT CONFIGURED" | "TEST REQUIRED" | "ERROR" | "PASS" | "WARNING" | "FAILED" | "READY_PENDING_VAPID";
     configured: boolean;
+    hasCredentials?: boolean;
+    oauthStatus?: "PASS" | "FAILED" | "NOT_CONFIGURED";
     hasVapidKey: boolean;
     hasProjectId: boolean;
     hasClientEmail: boolean;
     hasPrivateKey: boolean;
     pushService: string;
+    environment?: string;
+    remediation?: string;
   };
   devices: {
     totalActiveDevices: number;
     breakdown: Array<{ deviceType: string; count: number }>;
+  };
+  adminDevice?: {
+    registeredOnThisAccount: boolean;
+    activeTokensCount: number;
   };
   deliveries: {
     total: number;
@@ -89,6 +99,9 @@ export function PwaDiagnosticsClient() {
   const [permissionRequesting, setPermissionRequesting] = useState(false);
   const [swTesting, setSwTesting] = useState(false);
   const [swTestMessage, setSwTestMessage] = useState("");
+  const [testPushLoading, setTestPushLoading] = useState(false);
+  const [testPushMessage, setTestPushMessage] = useState("");
+  const [testPushStatus, setTestPushStatus] = useState<"idle" | "success" | "error">("idle");
 
   const inspectClient = useCallback(() => {
     if (typeof window === "undefined") return;
@@ -154,25 +167,20 @@ export function PwaDiagnosticsClient() {
       inspectClient();
       if (res === "granted" && "serviceWorker" in navigator) {
         const reg = await navigator.serviceWorker.ready;
-        const vapidKey =
-          process.env.NEXT_PUBLIC_FIREBASE_VAPID_KEY || process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
-        if (vapidKey) {
-          const sub = await reg.pushManager.subscribe({
-            userVisibleOnly: true,
-            applicationServerKey: vapidKey,
-          }).catch(() => null);
-          if (sub) {
-            await fetch("/api/notifications/push-token", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                token: JSON.stringify(sub),
-                deviceType: "web_admin_test",
-                userAgent: navigator.userAgent,
-              }),
-            });
-            await loadDiagnostics();
-          }
+        const { token, error } = await requestClientFcmToken(reg);
+        if (token) {
+          await fetch("/api/notifications/push-token", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              token,
+              deviceType: "web_admin_test",
+              userAgent: navigator.userAgent,
+            }),
+          });
+          await loadDiagnostics();
+        } else if (error) {
+          console.warn("[PWA Diagnostics] Could not obtain FCM token:", error);
         }
       }
     } finally {
@@ -202,6 +210,35 @@ export function PwaDiagnosticsClient() {
       setSwTestMessage(`Service Worker test error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setSwTesting(false);
+    }
+  };
+
+  const handleSendTestPush = async () => {
+    setTestPushLoading(true);
+    setTestPushMessage("");
+    setTestPushStatus("idle");
+    try {
+      const res = await fetch("/api/settings/pwa", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "test_push" }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setTestPushStatus("error");
+        setTestPushMessage(data.message || data.error || "Failed to dispatch test notification.");
+      } else {
+        setTestPushStatus("success");
+        setTestPushMessage(
+          `Test notification dispatched successfully! Recipient: ${data.recipientCount || 1}, In-App: ${data.inAppCount || 0}, Push Dispatched: ${data.pushSentCount || 0}`
+        );
+      }
+      await loadDiagnostics();
+    } catch (e) {
+      setTestPushStatus("error");
+      setTestPushMessage(`Network error dispatching test push: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setTestPushLoading(false);
     }
   };
 
@@ -443,21 +480,35 @@ export function PwaDiagnosticsClient() {
               {/* 6. Firebase Server Configuration */}
               <div className="grid grid-cols-1 gap-2 py-3.5 sm:grid-cols-3 sm:items-center">
                 <div className="flex items-center gap-2">
-                  <Flame className={`size-4 ${serverData?.firebase.configured ? "text-amber-500" : "text-slate-400"}`} />
-                  <b className="text-xs font-bold text-slate-900 dark:text-slate-100">6. Firebase Credentials</b>
+                  <Flame className={`size-4 ${serverData?.firebase.hasCredentials ? "text-amber-500" : "text-slate-400"}`} />
+                  <b className="text-xs font-bold text-slate-900 dark:text-slate-100">6. Firebase Credentials &amp; OAuth</b>
                 </div>
                 <div className="text-xs text-slate-600 dark:text-slate-400">
-                  VAPID: {serverData?.firebase.hasVapidKey ? "✓" : "✗"} · Project ID: {serverData?.firebase.hasProjectId ? "✓" : "✗"} · Client Email: {serverData?.firebase.hasClientEmail ? "✓" : "✗"} · Private Key: {serverData?.firebase.hasPrivateKey ? "✓" : "✗"}
+                  OAuth: <span className="font-semibold">{serverData?.firebase.oauthStatus || "CHECKING"}</span> · Env: <span className="font-semibold">{serverData?.firebase.environment || "production"}</span> · VAPID: {serverData?.firebase.hasVapidKey ? "✓ (Configured)" : "✗ (Blocked)"}
                 </div>
                 <div className="sm:text-right">
                   <span
                     className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-extrabold ${
-                      serverData?.firebase.configured
+                      serverData?.firebase.status === "READY" || serverData?.firebase.status === "PASS"
                         ? "bg-emerald-100 text-emerald-800"
-                        : "bg-amber-100 text-amber-800"
+                        : serverData?.firebase.status === "TEST REQUIRED"
+                          ? "bg-indigo-100 text-indigo-800"
+                          : serverData?.firebase.status === "BLOCKED" || serverData?.firebase.status === "READY_PENDING_VAPID"
+                            ? "bg-amber-100 text-amber-800"
+                            : serverData?.firebase.status === "ERROR"
+                              ? "bg-red-100 text-red-800"
+                              : "bg-slate-100 text-slate-800"
                     }`}
                   >
-                    {serverData?.firebase.configured ? "PASS · Configured" : "NOT CONFIGURED"}
+                    {serverData?.firebase.status === "READY" || serverData?.firebase.status === "PASS"
+                      ? "READY · Production Active"
+                      : serverData?.firebase.status === "TEST REQUIRED"
+                        ? "TEST REQUIRED · Device Enroll Needed"
+                        : serverData?.firebase.status === "BLOCKED" || serverData?.firebase.status === "READY_PENDING_VAPID"
+                          ? "BLOCKED · VAPID Pending"
+                          : serverData?.firebase.status === "ERROR"
+                            ? "ERROR · OAuth Failed"
+                            : "NOT CONFIGURED"}
                   </span>
                 </div>
               </div>
@@ -578,6 +629,16 @@ export function PwaDiagnosticsClient() {
                 </span>
               </button>
 
+              <button
+                type="button"
+                onClick={handleSendTestPush}
+                disabled={testPushLoading}
+                className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-4 py-2 text-xs font-bold text-white shadow transition hover:bg-violet-700 disabled:opacity-50"
+              >
+                <Bell className="size-3.5" />
+                <span>{testPushLoading ? "Dispatching..." : "Send Controlled Test Push"}</span>
+              </button>
+
               <a
                 href="/manifest.webmanifest"
                 target="_blank"
@@ -612,6 +673,18 @@ export function PwaDiagnosticsClient() {
             {swTestMessage && (
               <div className="mt-3 rounded-xl border border-blue-200 bg-blue-50/70 p-3 text-xs font-medium text-blue-900 dark:border-blue-900/50 dark:bg-blue-950/40 dark:text-blue-200">
                 {swTestMessage}
+              </div>
+            )}
+
+            {testPushMessage && (
+              <div
+                className={`mt-3 rounded-xl border p-3 text-xs font-medium ${
+                  testPushStatus === "success"
+                    ? "border-emerald-200 bg-emerald-50/70 text-emerald-900 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-200"
+                    : "border-amber-200 bg-amber-50/70 text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-200"
+                }`}
+              >
+                {testPushMessage}
               </div>
             )}
           </div>
@@ -686,3 +759,4 @@ function ClockIcon(props: { className?: string }) {
     </svg>
   );
 }
+

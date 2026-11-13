@@ -169,10 +169,10 @@ export function AuthForm({ mode, initialStudentCount = 1, afterSubscriptionHref,
             )}
             <Field
               name="email"
-              label={audience === "parent" ? "Registered Mobile Number or Email" : "Email address"}
-              placeholder={audience === "parent" ? "e.g. 9876543210 or parent@school.edu" : "admin@school.edu"}
-              type={audience === "parent" ? "text" : "email"}
-              autoComplete={audience === "parent" ? "username" : "email"}
+              label={audience === "parent" || audience === "teacher" ? "Registered Mobile Number or Email" : "Email address"}
+              placeholder={audience === "parent" ? "e.g. 9876543210 or parent@school.edu" : audience === "teacher" ? "e.g. 9876543210 or teacher@school.edu" : "admin@school.edu"}
+              type={audience === "parent" || audience === "teacher" ? "text" : "email"}
+              autoComplete={audience === "parent" || audience === "teacher" ? "username" : "email"}
             />
             <label className="block text-sm font-bold text-slate-100">
               Password

@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { usePathname } from "next/navigation";
 import { Bell, BellOff, Check, Loader2 } from "lucide-react";
+import { requestClientFcmToken, isFirebaseMessagingSupported } from "@/lib/firebase-client";
 
 export function NotificationPushManager() {
   const pathname = usePathname();
@@ -13,19 +14,14 @@ export function NotificationPushManager() {
 
   const syncPushToken = useCallback(async (registration: ServiceWorkerRegistration) => {
     try {
-      let sub = await registration.pushManager.getSubscription();
-      if (!sub) {
-        // Generate or obtain subscription
-        const vapidKey = process.env.NEXT_PUBLIC_FIREBASE_VAPID_KEY || process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
-        const options: PushSubscriptionOptionsInit = { userVisibleOnly: true };
-        if (vapidKey) {
-          options.applicationServerKey = urlBase64ToUint8Array(vapidKey);
+      const { token, error } = await requestClientFcmToken(registration);
+      if (!token) {
+        if (error) {
+          console.warn("[PushManager] Could not obtain FCM token:", error);
         }
-        sub = await registration.pushManager.subscribe(options).catch(() => null);
+        return;
       }
 
-      if (!sub) return;
-      const token = JSON.stringify(sub);
       await fetch("/api/notifications/push-token", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -46,6 +42,7 @@ export function NotificationPushManager() {
     let active = true;
     const isAuthenticatedPortal =
       pathname.startsWith("/dashboard") ||
+      (pathname.startsWith("/admin") && pathname !== "/admin/login") ||
       (pathname.startsWith("/parent") && pathname !== "/parent/login") ||
       (pathname.startsWith("/teacher") && pathname !== "/teacher/login") ||
       (pathname.startsWith("/student") && pathname !== "/student/login");
@@ -55,9 +52,14 @@ export function NotificationPushManager() {
     if (!canUsePush) setShowPrompt(false);
     if ("Notification" in window) setPermission(Notification.permission);
 
-    // Register the PWA worker even when the browser does not support push.
-    navigator.serviceWorker
-      .register("/sw.js", { scope: "/" })
+    // Register the role-scoped PWA worker even when the browser does not support push.
+    const workerRegistrationPromise = pathname.startsWith("/teacher")
+      ? navigator.serviceWorker.register("/teacher/sw.js", { scope: "/teacher/" })
+      : pathname.startsWith("/parent")
+        ? navigator.serviceWorker.register("/parent/sw.js", { scope: "/parent/" })
+        : navigator.serviceWorker.register("/sw.js", { scope: "/" });
+
+    workerRegistrationPromise
       .then((registration) => {
         if (!active || !canUsePush) return;
         if (Notification.permission === "granted") {
@@ -118,7 +120,7 @@ export function NotificationPushManager() {
     } finally {
       setIsSubscribing(false);
     }
-  }, [supported]);
+  }, [supported, syncPushToken]);
 
   const handleDismissPrompt = () => {
     setShowPrompt(false);

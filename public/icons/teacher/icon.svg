@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="teacherGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4f46e5"/>
+      <stop offset="50%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#7c3aed"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#000000" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#teacherGrad)"/>
+  <circle cx="256" cy="256" r="210" fill="none" stroke="#ffffff" stroke-opacity="0.15" stroke-width="4"/>
+  <!-- Graduation Cap & Book symbol -->
+  <g filter="url(#shadow)" fill="#ffffff">
+    <!-- Cap top -->
+    <polygon points="256,110 396,175 256,240 116,175"/>
+    <!-- Cap skullcap -->
+    <path d="M166,204 L166,280 C166,325 206,350 256,350 C306,350 346,325 346,280 L346,204 L256,245 Z" fill="#ffffff" fill-opacity="0.95"/>
+    <!-- Tassel -->
+    <path d="M370,185 L378,285 C378,295 366,305 358,300 C350,295 354,285 358,285 L366,185 Z" fill="#fbbf24"/>
+    <!-- Open Book at bottom -->
+    <path d="M140,360 Q256,330 256,375 Q256,330 372,360 L372,400 Q256,370 256,415 Q256,370 140,400 Z" fill="#ffffff"/>
+  </g>
+  <!-- Text Label -->
+  <text x="256" y="455" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif" font-size="34" font-weight="900" fill="#ffffff" text-anchor="middle" letter-spacing="4">TEACHER</text>
+</svg>

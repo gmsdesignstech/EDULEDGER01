@@ -1,0 +1,97 @@
+{
+  "name": "Workflow Status Tracking – Meta WhatsApp to EduLedger",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp-status-callback",
+        "options": {}
+      },
+      "id": "node-webhook-meta-status",
+      "name": "Meta Webhook – Status Event",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        180,
+        300
+      ],
+      "webhookId": "meta-whatsapp-status-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parses Meta Cloud API webhook delivery statuses and formats for EduLedger\nconst body = $input.first().body;\nconst entries = body.entry || [];\nconst updates = [];\n\nfor (const entry of entries) {\n  for (const change of entry.changes || []) {\n    const value = change.value || {};\n    for (const statusItem of value.statuses || []) {\n      updates.push({\n        providerMessageId: statusItem.id,\n        status: statusItem.status, // sent, delivered, read, failed\n        timestamp: statusItem.timestamp ? new Date(Number(statusItem.timestamp) * 1000).toISOString() : new Date().toISOString(),\n        recipientPhone: statusItem.recipient_id,\n        errorCode: statusItem.errors ? String(statusItem.errors[0].code) : '',\n        errorMessage: statusItem.errors ? String(statusItem.errors[0].title || statusItem.errors[0].message) : ''\n      });\n    }\n  }\n}\n\nreturn updates.map(update => ({ json: update }));"
+      },
+      "id": "node-parse-meta-status",
+      "name": "Parse Meta Statuses",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EDULEDGER_WEBHOOK_URL || '{{EDULEDGER_WEBHOOK_URL}}' }}/api/whatsapp/webhook",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-EduLedger-Signature",
+              "value": "={{ $env.EDULEDGER_WEBHOOK_SECRET || '{{EDULEDGER_WEBHOOK_SECRET}}' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"providerMessageId\": \"{{ $json.providerMessageId }}\",\n  \"status\": \"{{ $json.status }}\",\n  \"timestamp\": \"{{ $json.timestamp }}\",\n  \"errorCode\": \"{{ $json.errorCode }}\",\n  \"errorMessage\": \"{{ $json.errorMessage }}\"\n}",
+        "options": {
+          "retryOnFail": true,
+          "maxTries": 3,
+          "waitBetweenTries": 2000
+        }
+      },
+      "id": "node-forward-status-to-eduledger",
+      "name": "Forward to EduLedger API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        680,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Meta Webhook – Status Event": {
+      "main": [
+        [
+          {
+            "node": "Parse Meta Statuses",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Meta Statuses": {
+      "main": [
+        [
+          {
+            "node": "Forward to EduLedger API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}

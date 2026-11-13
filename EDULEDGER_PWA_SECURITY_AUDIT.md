@@ -62,3 +62,4 @@ const SENSITIVE_PREFIXES = [
 * **Tenant Isolation**: Every device token in `fcm_device_tokens` is foreign-keyed to an `institution_id` and `user_id`.
 * **Notification Scoping**: Notifications are dispatched only to the specific `user_id` belonging to the affected student or guardian. A notification intended for Parent A can never be delivered to Parent B.
 * **Token Invalidation**: When a user revokes permissions or logs out, `/api/notifications/push-token` updates the token status to `REVOKED`.
+

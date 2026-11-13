@@ -222,7 +222,13 @@ self.addEventListener("notificationclick", (event) => {
 
   if (event.action === "dismiss") return;
 
-  const targetUrl = event.notification.data?.url || "/";
+  const rawUrl = event.notification.data?.url || "/";
+  let targetUrl = "/";
+  try {
+    targetUrl = new URL(rawUrl, self.location.origin).href;
+  } catch {
+    targetUrl = self.location.origin;
+  }
 
   event.waitUntil(
     self.clients

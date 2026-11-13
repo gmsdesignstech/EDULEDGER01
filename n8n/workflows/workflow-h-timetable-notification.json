@@ -1,0 +1,156 @@
+{
+  "name": "Workflow H – EduLedger Timetable Notification",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "timetable-notification-webhook",
+        "options": {}
+      },
+      "id": "node-webhook-tt",
+      "name": "Webhook – Timetable Event",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        180,
+        300
+      ],
+      "webhookId": "eduledger-timetable-webhook"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.parent.hasConsent }}",
+              "value2": true
+            },
+            {
+              "value1": "={{ $json.parent.optedOut }}",
+              "value2": false
+            }
+          ],
+          "string": [
+            {
+              "value1": "={{ $json.eventType }}",
+              "value2": "timetable.updated"
+            }
+          ]
+        }
+      },
+      "id": "node-validate-tt",
+      "name": "Verify Timetable Event & Consent",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v21.0/{{ $env.WHATSAPP_PHONE_NUMBER_ID || '{{WHATSAPP_PHONE_NUMBER_ID}}' }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.WHATSAPP_ACCESS_TOKEN || '{{WHATSAPP_ACCESS_TOKEN}}' }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"recipient_type\": \"individual\",\n  \"to\": \"{{ $json.parent.phone.replace(/\\D/g, '') }}\",\n  \"type\": \"text\",\n  \"text\": {\n    \"body\": {{ JSON.stringify($json.template.renderedMessage) }}\n  }\n}",
+        "options": {
+          "retryOnFail": true,
+          "maxTries": 3,
+          "waitBetweenTries": 2000
+        }
+      },
+      "id": "node-send-tt-whatsapp",
+      "name": "Send WhatsApp Timetable Notice",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        680,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EDULEDGER_WEBHOOK_URL || '{{EDULEDGER_WEBHOOK_URL}}' }}/api/whatsapp/webhook",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"providerMessageId\": \"{{ $json.messages ? $json.messages[0].id : '' }}\",\n  \"status\": \"sent\",\n  \"timestamp\": \"{{ new Date().toISOString() }}\",\n  \"eventType\": \"timetable.updated\"\n}",
+        "options": {
+          "retryOnFail": true,
+          "maxTries": 3,
+          "waitBetweenTries": 2000
+        }
+      },
+      "id": "node-tt-callback",
+      "name": "Update History Callback",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        920,
+        240
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook – Timetable Event": {
+      "main": [
+        [
+          {
+            "node": "Verify Timetable Event & Consent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Timetable Event & Consent": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp Timetable Notice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send WhatsApp Timetable Notice": {
+      "main": [
+        [
+          {
+            "node": "Update History Callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}

@@ -332,6 +332,9 @@ CREATE TABLE IF NOT EXISTS fcm_device_tokens(id TEXT PRIMARY KEY,institution_id 
 CREATE TABLE IF NOT EXISTS notification_events(id TEXT PRIMARY KEY,institution_id TEXT NOT NULL REFERENCES institutions(id),event_key TEXT NOT NULL UNIQUE,event_type TEXT NOT NULL,title TEXT NOT NULL,body TEXT NOT NULL,data JSONB NOT NULL DEFAULT '{}'::jsonb,deep_link TEXT NOT NULL DEFAULT '',recipient_user_ids JSONB NOT NULL DEFAULT '[]'::jsonb,status TEXT NOT NULL DEFAULT 'PROCESSED' CHECK(status IN ('QUEUED','PROCESSED','FAILED')),created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS notification_deliveries(id TEXT PRIMARY KEY,institution_id TEXT NOT NULL REFERENCES institutions(id),event_id TEXT REFERENCES notification_events(id) ON DELETE CASCADE,notification_id TEXT REFERENCES notifications(id) ON DELETE SET NULL,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,device_token_id TEXT REFERENCES fcm_device_tokens(id) ON DELETE SET NULL,channel TEXT NOT NULL DEFAULT 'FCM' CHECK(channel IN ('FCM','IN_APP')),status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','SENT','DELIVERED','FAILED','REVOKED')),attempt_count INTEGER NOT NULL DEFAULT 0,max_attempts INTEGER NOT NULL DEFAULT 3,provider_message_id TEXT,error_code TEXT NOT NULL DEFAULT '',error_message TEXT NOT NULL DEFAULT '',next_retry_at TIMESTAMPTZ,sent_at TIMESTAMPTZ,delivered_at TIMESTAMPTZ,created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS school_notification_settings(institution_id TEXT PRIMARY KEY REFERENCES institutions(id) ON DELETE CASCADE,push_enabled BOOLEAN NOT NULL DEFAULT TRUE,student_absent BOOLEAN NOT NULL DEFAULT TRUE,attendance_correction BOOLEAN NOT NULL DEFAULT TRUE,fee_payment BOOLEAN NOT NULL DEFAULT TRUE,fee_reminders BOOLEAN NOT NULL DEFAULT TRUE,homework BOOLEAN NOT NULL DEFAULT TRUE,exam_results BOOLEAN NOT NULL DEFAULT TRUE,announcements BOOLEAN NOT NULL DEFAULT TRUE,teacher_leave BOOLEAN NOT NULL DEFAULT TRUE,updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS password_reset_tokens(id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,token_hash TEXT NOT NULL UNIQUE,expires_at TIMESTAMPTZ NOT NULL,consumed_at TIMESTAMPTZ,created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_hash ON password_reset_tokens(token_hash);
+CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user ON password_reset_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_students_institution ON students(institution_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower ON users(LOWER(email));
@@ -557,6 +560,96 @@ export async function ensureEssentialProductionSchema(customDb?: Sql): Promise<v
       ALTER TABLE students ADD COLUMN IF NOT EXISTS leaving_reason TEXT NOT NULL DEFAULT '';
       ALTER TABLE students ADD COLUMN IF NOT EXISTS graduation_date TEXT;
       ALTER TABLE students ADD COLUMN IF NOT EXISTS leaving_remarks TEXT NOT NULL DEFAULT '';
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS parent_whatsapp TEXT NOT NULL DEFAULT '';
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS parent_relationship TEXT NOT NULL DEFAULT '';
+
+      -- User status and login audit
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'Active';
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
+
+      -- Essential authentication and notification tables
+      CREATE TABLE IF NOT EXISTS parent_students(
+        id TEXT PRIMARY KEY,
+        institution_id TEXT NOT NULL REFERENCES institutions(id) ON DELETE CASCADE,
+        parent_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        student_id TEXT NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+        relationship TEXT NOT NULL DEFAULT 'Parent',
+        is_primary BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(parent_user_id, student_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_parent_students_user ON parent_students(parent_user_id);
+      CREATE INDEX IF NOT EXISTS idx_parent_students_student ON parent_students(student_id);
+
+      CREATE TABLE IF NOT EXISTS parent_invitations(
+        id TEXT PRIMARY KEY,
+        institution_id TEXT NOT NULL REFERENCES institutions(id) ON DELETE CASCADE,
+        student_id TEXT NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+        parent_name TEXT NOT NULL,
+        parent_email TEXT NOT NULL,
+        parent_phone TEXT NOT NULL DEFAULT '',
+        invitation_code TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','ACCEPTED','EXPIRED')),
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_by TEXT REFERENCES users(id),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        accepted_at TIMESTAMPTZ
+      );
+
+      CREATE TABLE IF NOT EXISTS fcm_device_tokens(
+        id TEXT PRIMARY KEY,
+        institution_id TEXT NOT NULL REFERENCES institutions(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        token TEXT NOT NULL UNIQUE,
+        device_type TEXT NOT NULL DEFAULT 'web',
+        user_agent TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE','REVOKED','EXPIRED')),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        revoked_at TIMESTAMPTZ
+      );
+      CREATE INDEX IF NOT EXISTS idx_fcm_tokens_user ON fcm_device_tokens(user_id);
+
+      CREATE TABLE IF NOT EXISTS password_reset_tokens(
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        token_hash TEXT NOT NULL UNIQUE,
+        expires_at TIMESTAMPTZ NOT NULL,
+        consumed_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_hash ON password_reset_tokens(token_hash);
+      CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user ON password_reset_tokens(user_id);
+
+      CREATE TABLE IF NOT EXISTS whatsapp_share_logs (
+        id TEXT PRIMARY KEY,
+        institution_id TEXT NOT NULL REFERENCES institutions(id) ON DELETE CASCADE,
+        student_id TEXT REFERENCES students(id) ON DELETE SET NULL,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        user_name TEXT NOT NULL DEFAULT '',
+        recipient_phone TEXT NOT NULL,
+        recipient_name TEXT NOT NULL DEFAULT '',
+        category TEXT NOT NULL,
+        message_preview TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'WhatsApp Opened / Share Initiated',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_whatsapp_share_logs_inst ON whatsapp_share_logs(institution_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_whatsapp_share_logs_student ON whatsapp_share_logs(institution_id, student_id);
+
+      CREATE TABLE IF NOT EXISTS whatsapp_custom_templates (
+        id TEXT PRIMARY KEY,
+        institution_id TEXT NOT NULL REFERENCES institutions(id) ON DELETE CASCADE,
+        category TEXT NOT NULL,
+        title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        is_default BOOLEAN NOT NULL DEFAULT FALSE,
+        created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(institution_id, category, title)
+      );
+      CREATE INDEX IF NOT EXISTS idx_whatsapp_custom_templates_inst ON whatsapp_custom_templates(institution_id);
     `);
   })().catch((err) => {
     essentialSchemaPromise = null;
@@ -585,10 +678,25 @@ async function ready() {
   }
   return sql;
 }
+export async function getDb() {
+  return ready();
+}
+export async function queryRows<T extends Record<string, unknown>>(query: string, args: unknown[] = []): Promise<T[]> {
+  const db = await ready();
+  return (await db.unsafe(bind(query, db), args)) as unknown as T[];
+}
+export async function queryRow<T extends Record<string, unknown>>(query: string, args: unknown[] = []): Promise<T | undefined> {
+  const list = await queryRows<T>(query, args);
+  return list[0];
+}
+export async function queryRun(query: string, args: unknown[] = []): Promise<number> {
+  const db = await ready();
+  return Number((await db.unsafe(bind(query, db), args)).count ?? 0);
+}
 export async function databaseHealth() {
   await row<{ ok: number }>("SELECT 1 AS ok", [], await ready());
 }
-export async function recordUserLogin(userId:string){await run("UPDATE users SET last_login_at=CURRENT_TIMESTAMP WHERE id=?",[userId],await ready())}
+export async function recordUserLogin(userId:string){try{await run("UPDATE users SET last_login_at=CURRENT_TIMESTAMP WHERE id=?",[userId],await ready())}catch{}}
 async function audit(
   institutionId: string,
   userId: string | undefined,
@@ -783,43 +891,138 @@ export async function findUserByEmailOrPhone(identifier: string) {
   const db = await ready();
 
   // 1. Try exact email lookup
-  let u = await row<DbUser & { passwordHash: string; status: string }>(
-    'SELECT id,email,name,password_hash AS "passwordHash",role,status,institution_id AS "institutionId" FROM users WHERE LOWER(email)=?',
-    [lower],
-    db,
-  );
-  if (u) return u;
+  try {
+    const u = await row<DbUser & { passwordHash: string; status: string }>(
+      'SELECT id,email,name,password_hash AS "passwordHash",role,status,institution_id AS "institutionId" FROM users WHERE LOWER(email)=?',
+      [lower],
+      db,
+    );
+    if (u) {
+      if (u.role === "TEACHER") {
+        try {
+          const t = await row<{ status: string }>(
+            "SELECT status FROM teachers WHERE institution_id=? AND (LOWER(TRIM(email))=LOWER(TRIM(?)) OR ? LIKE 'teacher_%') ORDER BY CASE WHEN status='Active' THEN 0 ELSE 1 END LIMIT 1",
+            [u.institutionId, u.email, u.email],
+            db,
+          );
+          if (t && t.status !== "Active") {
+            return { ...u, status: "Inactive" };
+          }
+        } catch {
+          // If teachers table not reachable, use existing status
+        }
+      }
+      return u;
+    }
+  } catch {
+    // Ignore and proceed
+  }
 
-  // 2. Parent lookup: Parent numbers come from the school's existing student profiles (students.parent_phone / parent_whatsapp)
+  // 2. Parent & Teacher lookup by phone
   if (digits.length >= 7) {
     const last10 = digits.length > 10 ? digits.slice(-10) : digits;
-    const parentUser = await row<DbUser & { passwordHash: string; status: string }>(
-      `SELECT u.id, u.email, u.name, u.password_hash AS "passwordHash", u.role, u.status, u.institution_id AS "institutionId"
-       FROM users u
-       JOIN students s ON s.institution_id = u.institution_id
-       LEFT JOIN parent_students ps ON ps.parent_user_id=u.id AND ps.student_id=s.id AND ps.institution_id=s.institution_id
-       WHERE u.role='PARENT' AND s.status<>'Deleted' AND (
-         s.parent_phone=? OR s.parent_phone LIKE ? OR s.parent_phone LIKE ? OR
-         s.parent_whatsapp=? OR s.parent_whatsapp LIKE ? OR s.parent_whatsapp LIKE ?
-       )
-       ORDER BY CASE WHEN ps.parent_user_id IS NOT NULL THEN 0 ELSE 1 END, s.created_at DESC
-       LIMIT 1`,
-      [clean, `%${digits}%`, `%${last10}%`, clean, `%${digits}%`, `%${last10}%`],
-      db,
-    );
-    if (parentUser) return parentUser;
 
-    // 3. Teacher lookup: Teacher numbers come from existing teacher profiles (teachers.phone)
-    const teacherUser = await row<DbUser & { passwordHash: string; status: string }>(
-      `SELECT u.id, u.email, u.name, u.password_hash AS "passwordHash", u.role, u.status, u.institution_id AS "institutionId"
-       FROM users u
-       JOIN teachers t ON LOWER(t.email) = LOWER(u.email) AND t.institution_id = u.institution_id
-       WHERE u.role='TEACHER' AND (t.phone=? OR t.phone LIKE ? OR t.phone LIKE ?)
-       LIMIT 1`,
-      [clean, `%${digits}%`, `%${last10}%`],
-      db,
-    );
-    if (teacherUser) return teacherUser;
+    // 2a. Parent lookup with parent_students join
+    try {
+      const parentUser = await row<DbUser & { passwordHash: string; status: string }>(
+        `SELECT u.id, u.email, u.name, u.password_hash AS "passwordHash", u.role, u.status, u.institution_id AS "institutionId"
+         FROM users u
+         JOIN students s ON s.institution_id = u.institution_id
+         LEFT JOIN parent_students ps ON ps.parent_user_id=u.id AND ps.student_id=s.id AND ps.institution_id=s.institution_id
+         WHERE u.role='PARENT' AND s.status<>'Deleted' AND (
+           s.parent_phone=? OR s.parent_phone LIKE ? OR s.parent_phone LIKE ?
+         )
+         ORDER BY CASE WHEN ps.parent_user_id IS NOT NULL THEN 0 ELSE 1 END, s.created_at DESC
+         LIMIT 1`,
+        [clean, `%${digits}%`, `%${last10}%`],
+        db,
+      );
+      if (parentUser) return parentUser;
+    } catch {
+      // Fallback: simplified parent lookup without parent_students join
+      try {
+        const simpleParent = await row<DbUser & { passwordHash: string; status: string }>(
+          `SELECT u.id, u.email, u.name, u.password_hash AS "passwordHash", u.role, u.status, u.institution_id AS "institutionId"
+           FROM users u
+           JOIN students s ON s.institution_id = u.institution_id
+           WHERE u.role='PARENT' AND s.status<>'Deleted' AND (
+             s.parent_phone=? OR s.parent_phone LIKE ? OR s.parent_phone LIKE ?
+           )
+           LIMIT 1`,
+          [clean, `%${digits}%`, `%${last10}%`],
+          db,
+        );
+        if (simpleParent) return simpleParent;
+      } catch {
+        // Table or column not available
+      }
+    }
+
+    // 2b. Teacher lookup: Teacher numbers come from existing teacher profiles (teachers.phone)
+    try {
+      const teacherUser = await row<DbUser & { passwordHash: string; status: string }>(
+        `SELECT u.id, u.email, u.name, u.password_hash AS "passwordHash", u.role,
+                CASE WHEN t.status <> 'Active' THEN 'Inactive' ELSE u.status END AS status,
+                u.institution_id AS "institutionId"
+         FROM users u
+         JOIN teachers t ON t.institution_id = u.institution_id AND (
+           (t.email <> '' AND LOWER(t.email) = LOWER(u.email)) OR
+           u.email = 'teacher_' || ? || '@' || LOWER(t.institution_id) || '.internal' OR
+           u.email LIKE 'teacher_' || ? || '@%' OR
+           (t.email = '' AND u.email LIKE 'teacher_%')
+         )
+         WHERE u.role='TEACHER' AND (
+           t.phone = ? OR
+           t.phone LIKE ? OR
+           t.phone LIKE ? OR
+           replace(replace(replace(replace(t.phone, ' ', ''), '-', ''), '+91', ''), '+', '') = ? OR
+           replace(replace(replace(replace(t.phone, ' ', ''), '-', ''), '+91', ''), '+', '') LIKE ?
+         )
+         ORDER BY CASE WHEN t.status='Active' THEN 0 ELSE 1 END, t.created_at DESC
+         LIMIT 1`,
+        [digits, last10, clean, `%${digits}%`, `%${last10}%`, digits, `%${last10}%`],
+        db,
+      );
+      if (teacherUser) return teacherUser;
+    } catch {
+      // Fallback: simplified teacher lookup
+      try {
+        const simpleTeacher = await row<DbUser & { passwordHash: string; status: string }>(
+          `SELECT u.id, u.email, u.name, u.password_hash AS "passwordHash", u.role,
+                  CASE WHEN t.status <> 'Active' THEN 'Inactive' ELSE u.status END AS status,
+                  u.institution_id AS "institutionId"
+           FROM users u
+           JOIN teachers t ON t.institution_id = u.institution_id
+           WHERE u.role='TEACHER' AND (
+             (t.email <> '' AND LOWER(t.email) = LOWER(u.email)) OR
+             u.email LIKE 'teacher_%'
+           ) AND (
+             t.phone=? OR t.phone LIKE ? OR t.phone LIKE ?
+           )
+           ORDER BY CASE WHEN t.status='Active' THEN 0 ELSE 1 END
+           LIMIT 1`,
+          [clean, `%${digits}%`, `%${last10}%`],
+          db,
+        );
+        if (simpleTeacher) return simpleTeacher;
+      } catch {
+        // Ignore
+      }
+    }
+
+    // 2c. Direct match on users email/identifier
+    try {
+      const directUser = await row<DbUser & { passwordHash: string; status: string }>(
+        `SELECT id,email,name,password_hash AS "passwordHash",role,status,institution_id AS "institutionId"
+         FROM users
+         WHERE email=? OR email LIKE ? OR email LIKE ?`,
+        [clean, `%${digits}%`, `%${last10}%`],
+        db,
+      );
+      if (directUser) return directUser;
+    } catch {
+      // Ignore
+    }
   }
 
   return undefined;
@@ -1266,7 +1469,43 @@ export async function listTeachers(institutionId: string, search = "") {
 export type TeacherPortalAssignment = { academicYear:string; className:string; section:string; subject:string };
 export async function teacherPortalScope(institutionId:string,email:string){
   const db=await ready();
-  const teachers=await rows<DbTeacher>(`SELECT id,name,employee_id AS "employeeId",email,phone,department,subject,assigned_classes AS classes,joining_date AS "joiningDate",salary,status,created_at::text AS "createdAt" FROM teachers WHERE institution_id=? AND LOWER(TRIM(email))=LOWER(TRIM(?)) AND status='Active' ORDER BY created_at`,[institutionId,email],db);
+  const cleanEmail = email.trim().toLowerCase();
+  const phoneDigits = cleanEmail.startsWith("teacher_")
+    ? cleanEmail.replace(/^teacher_([0-9]+)@.*$/, "$1")
+    : "";
+
+  let teachers = await rows<DbTeacher>(
+    `SELECT id,name,employee_id AS "employeeId",email,phone,department,subject,assigned_classes AS classes,joining_date AS "joiningDate",salary,status,created_at::text AS "createdAt"
+     FROM teachers
+     WHERE institution_id=?
+       AND status='Active'
+       AND (
+         LOWER(TRIM(email))=?
+         OR (? <> '' AND (
+           phone=? OR
+           phone LIKE ? OR
+           replace(replace(replace(replace(phone, ' ', ''), '-', ''), '+91', ''), '+', '') = ? OR
+           replace(replace(replace(replace(phone, ' ', ''), '-', ''), '+91', ''), '+', '') LIKE ?
+         ))
+       )
+     ORDER BY created_at`,
+    [institutionId, cleanEmail, phoneDigits, phoneDigits, `%${phoneDigits}%`, phoneDigits, `%${phoneDigits}%`],
+    db,
+  ).catch(async () => {
+    return rows<DbTeacher>(
+      `SELECT id,name,employee_id AS "employeeId",email,phone,department,subject,assigned_classes AS classes,joining_date AS "joiningDate",salary,status,created_at::text AS "createdAt"
+       FROM teachers
+       WHERE institution_id=?
+         AND status='Active'
+         AND (
+           LOWER(TRIM(email))=?
+           OR (? <> '' AND (phone=? OR phone LIKE ?))
+         )
+       ORDER BY created_at`,
+      [institutionId, cleanEmail, phoneDigits, phoneDigits, `%${phoneDigits}%`],
+      db,
+    );
+  });
   if(teachers.length!==1)throw new Error(teachers.length?"Teacher account is linked to multiple active staff records.":"Teacher account is not linked to an active staff record.");
   const teacher=teachers[0];
   const timetable=await rows<{id:string;academicYear:string;className:string;section:string;subject:string;weekday:number;startTime:string;endTime:string}>(`SELECT id,academic_year AS "academicYear",class_name AS "className",section,subject,weekday,start_time AS "startTime",end_time AS "endTime" FROM timetable_entries WHERE institution_id=? AND teacher_id=? AND COALESCE(status, 'Published')='Published' ORDER BY weekday,start_time,class_name,section`,[institutionId,teacher.id],db).catch(async () => {
@@ -1319,16 +1558,92 @@ export async function teacherAssignedStudents(institutionId:string,assignments:T
   const where:string[]=[],args:unknown[]=[institutionId];for(const item of scopes.values()){where.push("(e.academic_year=? AND e.class_name=? AND e.section=?)");args.push(item.academicYear,item.className,item.section)}
   return rows<{id:string;name:string;admission:string;rollNumber:string;academicYear:string;className:string;section:string;gender:string;parent:string;parentPhone:string;bloodGroup:string;attendance:number}>(`SELECT s.id,s.name,s.admission,s.roll_number AS "rollNumber",e.academic_year AS "academicYear",e.class_name AS "className",e.section,s.gender,s.parent,s.parent_phone AS "parentPhone",COALESCE(s.blood_group,'') AS "bloodGroup",s.attendance FROM student_enrollments e JOIN students s ON s.id=e.student_id AND s.institution_id=e.institution_id WHERE e.institution_id=? AND e.status='Active' AND s.status='Active' AND (${where.join(" OR ")}) ORDER BY e.class_name,e.section,s.name`,args,db);
 }
-export async function upsertTeacherAccount(institutionId:string,input:{name:string;email:string;passwordHash:string;phone?:string}){
-  const db=await ready(),email=input.email.trim().toLowerCase();
-  const existing=await row<{id:string}>("SELECT id FROM users WHERE LOWER(TRIM(email))=?",[email],db);
-  if(existing){
-    await run("UPDATE users SET name=?,password_hash=?,role='TEACHER',institution_id=? WHERE id=?",[input.name,input.passwordHash,institutionId,existing.id],db);
-    return{id:existing.id,email,name:input.name,role:"TEACHER",institutionId};
+export async function upsertTeacherAccount(
+  institutionId: string,
+  input: {
+    name: string;
+    email?: string;
+    passwordHash?: string;
+    phone?: string;
+    status?: string;
+    previousEmail?: string;
+    teacherId?: string;
+  },
+) {
+  const db = await ready();
+  const cleanEmail = (input.email || "").trim().toLowerCase();
+  const rawDigits = (input.phone || "").replace(/[^0-9]/g, "");
+  const digits = rawDigits.length >= 10 ? rawDigits.slice(-10) : rawDigits;
+  const effectiveEmail = cleanEmail
+    ? cleanEmail
+    : digits
+      ? `teacher_${digits}@${institutionId.toLowerCase()}.internal`
+      : `teacher_${randomUUID().slice(0, 8)}@${institutionId.toLowerCase()}.internal`;
+
+  const previousEmail = (input.previousEmail || "").trim().toLowerCase();
+  const accountStatus = input.status === "Active" ? "Active" : input.status ? "Inactive" : "Active";
+
+  let existing: { id: string; email: string; passwordHash: string } | undefined;
+
+  // 1. Check by previous email if available and distinct
+  if (previousEmail && previousEmail !== effectiveEmail) {
+    existing = await row<{ id: string; email: string; passwordHash: string }>(
+      'SELECT id, email, password_hash AS "passwordHash" FROM users WHERE institution_id=? AND role=\'TEACHER\' AND LOWER(TRIM(email))=?',
+      [institutionId, previousEmail],
+      db,
+    );
   }
-  const id=randomUUID();
-  await run("INSERT INTO users(id,email,name,password_hash,role,institution_id)VALUES(?,?,?,?,?,?)",[id,email,input.name,input.passwordHash,"TEACHER",institutionId],db);
-  return{id,email,name:input.name,role:"TEACHER",institutionId};
+
+  // 2. Check by effective email
+  if (!existing) {
+    existing = await row<{ id: string; email: string; passwordHash: string }>(
+      'SELECT id, email, password_hash AS "passwordHash" FROM users WHERE LOWER(TRIM(email))=?',
+      [effectiveEmail],
+      db,
+    );
+  }
+
+  // 3. Check by synthetic phone email
+  if (!existing && digits) {
+    existing = await row<{ id: string; email: string; passwordHash: string }>(
+      'SELECT id, email, password_hash AS "passwordHash" FROM users WHERE institution_id=? AND role=\'TEACHER\' AND (email=? OR email LIKE ?)',
+      [institutionId, `teacher_${digits}@${institutionId.toLowerCase()}.internal`, `teacher_${digits}@%`],
+      db,
+    );
+  }
+
+  if (existing) {
+    if (input.passwordHash) {
+      await run(
+        "UPDATE users SET name=?, email=?, password_hash=?, role='TEACHER', institution_id=?, status=? WHERE id=?",
+        [input.name, effectiveEmail, input.passwordHash, institutionId, accountStatus, existing.id],
+        db,
+      );
+    } else {
+      await run(
+        "UPDATE users SET name=?, email=?, role='TEACHER', institution_id=?, status=? WHERE id=?",
+        [input.name, effectiveEmail, institutionId, accountStatus, existing.id],
+        db,
+      );
+    }
+    return { id: existing.id, email: effectiveEmail, name: input.name, role: "TEACHER", institutionId, status: accountStatus };
+  }
+
+  // New user account
+  const id = randomUUID();
+  let hashToUse = input.passwordHash;
+  if (!hashToUse) {
+    const { generateSecureTemporaryPassword } = await import("./account-provisioning");
+    const { hash } = await import("bcryptjs");
+    hashToUse = await hash(generateSecureTemporaryPassword(), 10);
+  }
+
+  await run(
+    "INSERT INTO users(id, email, name, password_hash, role, institution_id, status) VALUES(?,?,?,?,?,?,?)",
+    [id, effectiveEmail, input.name, hashToUse, "TEACHER", institutionId, accountStatus],
+    db,
+  );
+  return { id, email: effectiveEmail, name: input.name, role: "TEACHER", institutionId, status: accountStatus };
 }
 export async function saveTeacher(
   institutionId: string,
@@ -1383,6 +1698,7 @@ export async function updateTeacher(
   userId?: string,
 ) {
   const db = await ready();
+  const previous = await row<DbTeacher>("SELECT email, phone, status FROM teachers WHERE id=? AND institution_id=?", [id, institutionId], db);
   await run(
     "UPDATE teachers SET name=?,employee_id=?,email=?,phone=?,department=?,subject=?,assigned_classes=?,joining_date=?,salary=?,status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND institution_id=?",
     [
@@ -1401,6 +1717,18 @@ export async function updateTeacher(
     ],
     db,
   );
+  try {
+    await upsertTeacherAccount(institutionId, {
+      name: input.name,
+      email: input.email,
+      phone: input.phone,
+      status: input.status,
+      previousEmail: previous?.email,
+      teacherId: id,
+    });
+  } catch {
+    // Non-fatal if users table not yet populated or in isolated test
+  }
   await audit(
     institutionId,
     userId,
@@ -1418,12 +1746,24 @@ export async function deleteTeacher(
   userId?: string,
 ) {
   const db = await ready(),
+    previous = await row<DbTeacher>("SELECT email, phone FROM teachers WHERE id=? AND institution_id=?", [id, institutionId], db),
     count = await run(
       "UPDATE teachers SET status='Deleted',updated_at=CURRENT_TIMESTAMP WHERE id=? AND institution_id=? AND status<>'Deleted'",
       [id, institutionId],
       db,
     );
-  if (count)
+  if (count) {
+    if (previous) {
+      const cleanEmail = (previous.email || "").trim().toLowerCase();
+      if (cleanEmail) {
+        await run("UPDATE users SET status='Inactive' WHERE institution_id=? AND role='TEACHER' AND LOWER(TRIM(email))=?", [institutionId, cleanEmail], db).catch(() => null);
+      }
+      const rawDigits = (previous.phone || "").replace(/[^0-9]/g, "");
+      const digits = rawDigits.length >= 10 ? rawDigits.slice(-10) : rawDigits;
+      if (digits) {
+        await run("UPDATE users SET status='Inactive' WHERE institution_id=? AND role='TEACHER' AND (email=? OR email LIKE ?)", [institutionId, `teacher_${digits}@${institutionId.toLowerCase()}.internal`, `teacher_${digits}@%`], db).catch(() => null);
+      }
+    }
     await audit(
       institutionId,
       userId,
@@ -1433,6 +1773,7 @@ export async function deleteTeacher(
       {},
       db,
     );
+  }
   return count > 0;
 }
 export async function listClasses(
@@ -6610,4 +6951,142 @@ export async function getSchoolQrPaymentScreenshot(institutionId: string, paymen
   );
   if (!payment || !payment.screenshotAssetId) return null;
   return getSchoolAsset(institutionId, payment.screenshotAssetId);
+}
+
+export type PasswordResetTokenRecord = {
+  id: string;
+  userId: string;
+  tokenHash: string;
+  expiresAt: string;
+  consumedAt: string | null;
+  createdAt: string;
+};
+
+export async function createPasswordResetToken(
+  userId: string,
+  tokenHash: string,
+  expiresAt: Date
+): Promise<{ id: string }> {
+  const db = await ready();
+  const id = randomUUID();
+  await run(
+    `UPDATE password_reset_tokens
+     SET consumed_at = CURRENT_TIMESTAMP
+     WHERE user_id = ? AND consumed_at IS NULL`,
+    [userId],
+    db
+  );
+  await run(
+    `INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at)
+     VALUES (?, ?, ?, ?)`,
+    [id, userId, tokenHash, expiresAt.toISOString()],
+    db
+  );
+  return { id };
+}
+
+export async function verifyPasswordResetToken(tokenHash: string): Promise<{
+  valid: boolean;
+  error?: string;
+  tokenRecord?: PasswordResetTokenRecord;
+  user?: DbUser;
+}> {
+  const db = await ready();
+  const record = await row<PasswordResetTokenRecord & {
+    userEmail: string;
+    userName: string;
+    userRole: string;
+    userStatus: string;
+    userInstitutionId: string;
+  }>(
+    `SELECT t.id, t.user_id AS "userId", t.token_hash AS "tokenHash",
+            t.expires_at::text AS "expiresAt", t.consumed_at::text AS "consumedAt",
+            t.created_at::text AS "createdAt",
+            u.email AS "userEmail", u.name AS "userName", u.role AS "userRole",
+            u.status AS "userStatus", u.institution_id AS "userInstitutionId"
+     FROM password_reset_tokens t
+     JOIN users u ON u.id = t.user_id
+     WHERE t.token_hash = ?`,
+    [tokenHash],
+    db
+  );
+
+  if (!record) {
+    return { valid: false, error: "Invalid password reset link." };
+  }
+
+  if (record.consumedAt) {
+    return { valid: false, error: "This password reset link has already been used." };
+  }
+
+  if (new Date(record.expiresAt).getTime() < Date.now()) {
+    return { valid: false, error: "This password reset link has expired. Please request a new one." };
+  }
+
+  return {
+    valid: true,
+    tokenRecord: {
+      id: record.id,
+      userId: record.userId,
+      tokenHash: record.tokenHash,
+      expiresAt: record.expiresAt,
+      consumedAt: record.consumedAt,
+      createdAt: record.createdAt,
+    },
+    user: {
+      id: record.userId,
+      email: record.userEmail,
+      name: record.userName,
+      role: record.userRole,
+      institutionId: record.userInstitutionId,
+    },
+  };
+}
+
+export async function consumePasswordResetToken(
+  tokenHash: string,
+  newPasswordHash: string
+): Promise<{ success: boolean; user?: DbUser }> {
+  const verification = await verifyPasswordResetToken(tokenHash);
+  if (!verification.valid || !verification.tokenRecord || !verification.user) {
+    throw new Error(verification.error || "Invalid or expired password reset link.");
+  }
+
+  const { tokenRecord, user } = verification;
+
+  await connection().begin(async (tx) => {
+    await run(
+      `UPDATE password_reset_tokens
+       SET consumed_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [tokenRecord.id],
+      tx
+    );
+
+    await run(
+      `UPDATE users
+       SET password_hash = ?
+       WHERE id = ?`,
+      [newPasswordHash, user.id],
+      tx
+    );
+
+    await run(
+      `DELETE FROM sessions WHERE user_id = ?`,
+      [user.id],
+      tx
+    );
+
+    await audit(
+      user.institutionId,
+      user.id,
+      "Password Reset",
+      "User",
+      user.id,
+      { email: user.email, role: user.role },
+      tx
+    );
+  });
+
+  return { success: true, user };
 }

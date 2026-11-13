@@ -2,7 +2,7 @@
 
 import { readApiJson } from "@/lib/api-response";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, Eye, Loader2, Pencil, Plus, Search, X } from "lucide-react";
+import { Check, ChevronDown, Eye, FileDown, Loader2, Pencil, Plus, Search, X } from "lucide-react";
 import { DataActions } from "./data-actions";
 import { DeleteRecordButton } from "./delete-record-button";
 import { parseTeacherClasses, standardTeacherClasses } from "@/lib/teacher-classes";
@@ -54,14 +54,29 @@ export function Teachers() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const result = await readApiJson(response);
+      const result = await readApiJson<{ teacher?: Teacher; temporaryPassword?: string; error?: string }>(response);
       if (!response.ok) throw new Error(result.error || "Could not save the teacher.");
       setOpen(false);
       setEdit(null);
-      setMessage(edit ? "Teacher updated." : "Teacher added.");
-      await load();
+      setMessage(
+        edit
+          ? "Teacher updated successfully."
+          : result.temporaryPassword
+            ? `Teacher added. Temporary password: ${result.temporaryPassword}`
+            : "Teacher added successfully.",
+      );
+      try {
+        await load();
+      } catch (loadErr) {
+        console.warn("Could not reload teacher list:", loadErr);
+      }
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : "Could not save the teacher.");
+      const msg = error instanceof Error ? error.message : "Could not save the teacher.";
+      setFormError(
+        msg === "Failed to fetch"
+          ? "Network error: Unable to connect to server. Please check your connection and try again."
+          : msg,
+      );
     } finally {
       setSaving(false);
     }
@@ -70,7 +85,7 @@ export function Teachers() {
   return <div className="mx-auto max-w-7xl">
     <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
       <div><p className="label">People</p><h1 className="mt-2 text-3xl font-black">Teachers</h1><p className="mt-1 text-muted">Manage faculty profiles, subjects and assigned classes.</p></div>
-      {canEdit && <div className="flex flex-wrap gap-2"><DataActions type="teachers" onDeleted={() => setData([])} /><button className="btn-primary" onClick={() => { setEdit(null); setFormError(""); setOpen(true); }}><Plus className="size-4" />Add teacher</button></div>}
+      {canEdit && <div className="flex flex-wrap gap-2"><DataActions type="teachers" onDeleted={() => setData([])} /><a href="/api/credentials/teachers/pdf" download className="btn-secondary inline-flex items-center gap-1.5" title="Download Faculty Credentials PDF"><FileDown className="size-4" />Credentials PDF</a><button className="btn-primary" onClick={() => { setEdit(null); setFormError(""); setOpen(true); }}><Plus className="size-4" />Add teacher</button></div>}
     </div>
     {message && <p role="status" className="mt-5 rounded-xl border bg-panel p-3 text-sm">{message}</p>}
     <section className="mt-7 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">

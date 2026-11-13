@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="parentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1d4ed8"/>
+      <stop offset="50%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#0284c7"/>
+    </linearGradient>
+    <filter id="shadowP" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#000000" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#parentGrad)"/>
+  <circle cx="256" cy="256" r="210" fill="none" stroke="#ffffff" stroke-opacity="0.15" stroke-width="4"/>
+  <!-- Guardian & Child Figure -->
+  <g filter="url(#shadowP)" fill="#ffffff">
+    <!-- Parent head -->
+    <circle cx="200" cy="165" r="45"/>
+    <!-- Parent body / protective curve -->
+    <path d="M140,340 C140,265 170,225 235,225 C265,225 285,245 285,270 C285,295 260,310 240,315 C195,325 180,345 175,370 L140,370 Z"/>
+    <!-- Child head -->
+    <circle cx="315" cy="225" r="35"/>
+    <!-- Child body -->
+    <path d="M265,370 C265,310 290,275 345,275 C375,275 395,295 395,370 Z"/>
+    <!-- Heart above child -->
+    <path d="M315,160 C310,150 295,150 290,160 C285,170 300,185 315,195 C330,185 345,170 340,160 C335,150 320,150 315,160 Z" fill="#38bdf8"/>
+  </g>
+  <!-- Text Label -->
+  <text x="256" y="445" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif" font-size="34" font-weight="900" fill="#ffffff" text-anchor="middle" letter-spacing="4">PARENT</text>
+</svg>

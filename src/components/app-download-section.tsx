@@ -376,12 +376,12 @@ export function AppDownloadSection() {
           </div>
 
           {/* CARD 3: EDULEDGER PARENT APP */}
-          <div className="group relative flex flex-col justify-between overflow-hidden rounded-[32px] border border-emerald-200/80 bg-white p-6 shadow-[0_25px_80px_-35px_rgba(16,185,129,.2)] transition-all duration-300 hover:-translate-y-1 hover:border-emerald-300 hover:shadow-[0_35px_100px_-30px_rgba(16,185,129,.28)] sm:p-8">
-            <div className="absolute inset-x-0 top-0 h-2 bg-gradient-to-r from-emerald-500 via-teal-600 to-cyan-600" />
+          <div className="group relative flex flex-col justify-between overflow-hidden rounded-[32px] border border-blue-200/80 bg-white p-6 shadow-[0_25px_80px_-35px_rgba(29,78,216,.2)] transition-all duration-300 hover:-translate-y-1 hover:border-blue-300 hover:shadow-[0_35px_100px_-30px_rgba(29,78,216,.28)] sm:p-8">
+            <div className="absolute inset-x-0 top-0 h-2 bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500" />
 
             <div>
               <div className="flex items-center justify-between gap-3">
-                <span className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 ring-1 ring-inset ring-emerald-700/10">
+                <span className="inline-flex items-center gap-1.5 rounded-xl bg-blue-50 px-3 py-1.5 text-xs font-bold text-blue-700 ring-1 ring-inset ring-blue-700/10">
                   <GraduationCap className="size-3.5" />
                   For Parents &amp; Guardians
                 </span>
@@ -405,7 +405,7 @@ export function AppDownloadSection() {
                 <ul className="space-y-2">
                   {parentFeatures.map((f) => (
                     <li key={f} className="flex items-start gap-2 text-xs font-semibold text-slate-700">
-                      <span className="mt-0.5 grid size-4 shrink-0 place-items-center rounded-full bg-emerald-100 text-emerald-700">
+                      <span className="mt-0.5 grid size-4 shrink-0 place-items-center rounded-full bg-blue-100 text-blue-700">
                         <Check className="size-2.5 stroke-[3]" />
                       </span>
                       <span>{f}</span>
@@ -420,7 +420,7 @@ export function AppDownloadSection() {
                 <button
                   type="button"
                   onClick={() => triggerInstall("parent")}
-                  className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-emerald-500/25 transition hover:from-emerald-700 hover:to-teal-700 active:scale-95"
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-blue-500/25 transition hover:from-blue-700 hover:to-indigo-700 active:scale-95"
                 >
                   <Download className="size-4" />
                   <span>Install Parent App</span>
@@ -429,7 +429,7 @@ export function AppDownloadSection() {
                 <div className="flex items-center justify-between pt-1">
                   <Link
                     href="/parent"
-                    className="inline-flex items-center gap-1 text-xs font-bold text-emerald-600 hover:underline"
+                    className="inline-flex items-center gap-1 text-xs font-bold text-blue-600 hover:underline"
                   >
                     <span>Launch in browser</span>
                     <ChevronRight className="size-3" />
@@ -437,7 +437,7 @@ export function AppDownloadSection() {
 
                   <div className="flex items-center gap-2">
                     <div className="size-10 shrink-0 overflow-hidden rounded-lg border border-slate-200 bg-white p-0.5 shadow-sm">
-                      <QrSvg url={parentUrl} title="Parent Portal" accentColor="#059669" />
+                      <QrSvg url={parentUrl} title="Parent Portal" accentColor="#1d4ed8" />
                     </div>
                     <span className="text-[10px] text-slate-400 font-medium">Scan to open</span>
                   </div>
@@ -465,17 +465,20 @@ export function AppDownloadSection() {
             </button>
 
             <div className="flex items-center gap-3">
-              <span
-                className={`grid size-12 place-items-center rounded-2xl text-white shadow ${
-                  installModal === "admin"
-                    ? "bg-blue-600"
-                    : installModal === "teacher"
-                      ? "bg-violet-600"
-                      : "bg-emerald-600"
-                }`}
-              >
-                <Smartphone className="size-6" />
-              </span>
+              <div className="size-12 shrink-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-0.5 shadow">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={
+                    installModal === "admin"
+                      ? "/icons/icon-192.png"
+                      : installModal === "teacher"
+                        ? "/icons/teacher/icon-192.png"
+                        : "/icons/parent/icon-192.png"
+                  }
+                  alt=""
+                  className="size-full rounded-[14px] object-cover"
+                />
+              </div>
               <div>
                 <h3 className="text-lg font-black text-slate-900">
                   {installModal === "admin"
@@ -594,7 +597,7 @@ export function AppDownloadSection() {
                     <QrSvg
                       url={installModal === "admin" ? adminUrl : installModal === "teacher" ? teacherUrl : parentUrl}
                       title={installModal === "admin" ? "Admin Portal" : installModal === "teacher" ? "Teacher Portal" : "Parent Portal"}
-                      accentColor={installModal === "admin" ? "#1d4ed8" : installModal === "teacher" ? "#6d28d9" : "#059669"}
+                      accentColor={installModal === "admin" ? "#1d4ed8" : installModal === "teacher" ? "#6d28d9" : "#1d4ed8"}
                     />
                   </div>
                   <div>

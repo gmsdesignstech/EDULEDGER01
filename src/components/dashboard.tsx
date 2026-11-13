@@ -17,7 +17,7 @@ const groups:{label:string;items:NavItem[]}[]=[
  {label:"Academics",items:[{label:"Classes & Sections",href:"/dashboard/classes",icon:Layers3},{label:"Students",href:"/dashboard/students",icon:GraduationCap},{label:"Student ID Cards",href:"/dashboard/students/id-cards",icon:IdCard}]},
  {label:"Attendance",items:[{label:"Student Attendance",href:"/dashboard/attendance",icon:CalendarCheck2},{label:"Staff Attendance",href:"/dashboard/staff-attendance",icon:CalendarCheck2}]},
  {label:"People",items:[{label:"Staff",href:"/dashboard/teachers",icon:Users}]},
- {label:"Communication",items:[{label:"WhatsApp",href:"/dashboard/whatsapp",icon:MessageCircle}]},
+ {label:"Communication",items:[{label:"WhatsApp Communication",href:"/dashboard/whatsapp",icon:MessageCircle}]},
  {label:"Finance",items:[{label:"Fee Collection",href:"/dashboard/payments",icon:IndianRupee},{label:"Fee History",href:"/dashboard/payment-history",icon:WalletCards},{label:"Salary Management",href:"/dashboard/salary-management",icon:WalletMinimal},{label:"Finance / Transactions",href:"/dashboard/accounts",icon:Landmark},{label:"Receipts",href:"/dashboard/fee-receipts",icon:ReceiptText},{label:"Cash Book",href:"/dashboard/cash-book",icon:BookOpen}]},
  {label:"Academic Tools",items:[{label:"Timetable",href:"/dashboard/timetable",icon:CalendarDays},{label:"Results Management",href:"/dashboard/results",icon:FileCheck2},{label:"Reports",href:"/dashboard/reports",icon:FileText},{label:"Promotion",href:"/dashboard/students/promote",icon:ArrowUpRight}]},
  {label:"System",items:[{label:"Settings",href:"/dashboard/settings",icon:Settings}]},

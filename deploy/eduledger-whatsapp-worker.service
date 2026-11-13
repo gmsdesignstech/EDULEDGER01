@@ -1,0 +1,27 @@
+[Unit]
+Description=EduLedger WhatsApp Background Queue Worker
+After=network.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=eduledger
+Group=eduledger
+WorkingDirectory=/var/www/eduledger
+EnvironmentFile=/var/www/eduledger/.env.local
+ExecStart=/usr/bin/node scripts/whatsapp-worker.mjs
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=eduledger-whatsapp-worker
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+

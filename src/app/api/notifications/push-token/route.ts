@@ -2,17 +2,18 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { currentUser } from "@/lib/session";
 import { registerDeviceToken, revokeDeviceToken } from "@/lib/db";
+import { validateFcmToken } from "@/lib/notifications";
 
 export const runtime = "nodejs";
 
 const registerSchema = z.object({
-  token: z.string().trim().min(10).max(4096),
+  token: z.string().trim().min(1).max(4096),
   deviceType: z.string().trim().max(50).default("web"),
   userAgent: z.string().trim().max(300).default(""),
 });
 
 const revokeSchema = z.object({
-  token: z.string().trim().min(10).max(4096),
+  token: z.string().trim().min(1).max(4096),
 });
 
 export async function POST(request: Request) {
@@ -30,11 +31,23 @@ export async function POST(request: Request) {
     );
   }
 
+  const validation = validateFcmToken(parsed.data.token);
+  if (!validation.valid || !validation.token) {
+    return NextResponse.json(
+      {
+        error: validation.error || "Invalid FCM registration token",
+        type: validation.type,
+      },
+      { status: 400 }
+    );
+  }
+
   try {
+    const cleanToken = validation.token;
     const result = await registerDeviceToken(
       user.institutionId,
       user.id,
-      parsed.data.token,
+      cleanToken,
       parsed.data.deviceType,
       parsed.data.userAgent || request.headers.get("user-agent") || ""
     );
@@ -60,7 +73,9 @@ export async function DELETE(request: Request) {
   }
 
   try {
-    const success = await revokeDeviceToken(parsed.data.token, user.id);
+    const validation = validateFcmToken(parsed.data.token);
+    const cleanToken = validation.token || parsed.data.token.trim();
+    const success = await revokeDeviceToken(cleanToken, user.id);
     return NextResponse.json({ ok: true, revoked: success });
   } catch (error) {
     return NextResponse.json(

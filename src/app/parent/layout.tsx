@@ -7,8 +7,12 @@ import { ParentShell } from "@/components/parent-shell";
 export const runtime = "nodejs";
 export const metadata: Metadata = {
   title: "Parent Portal | EduLedger",
-  manifest: "/manifest-parent.webmanifest",
-  appleWebApp: { capable: true, statusBarStyle: "default", title: "Parent Portal" },
+  manifest: "/parent/manifest.webmanifest",
+  appleWebApp: { capable: true, statusBarStyle: "default", title: "EduLedger Parent" },
+  icons: {
+    icon: "/icons/parent/icon-192.png",
+    apple: "/icons/parent/apple-touch-icon.png",
+  },
   robots: { index: false, follow: false, nocache: true },
 };
 

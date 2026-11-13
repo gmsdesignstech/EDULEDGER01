@@ -98,8 +98,8 @@ export default function ParentTimetablePage() {
               key={day.num}
               onClick={() => setSelectedDay(day.num)}
               className={`flex items-center gap-2 shrink-0 rounded-2xl px-4 py-2.5 text-xs font-bold transition ${isSelected
-                  ? "bg-blue-600 text-white shadow-md shadow-blue-600/20"
-                  : "border bg-panel text-muted hover:text-foreground hover:bg-canvas"
+                ? "bg-blue-600 text-white shadow-md shadow-blue-600/20"
+                : "border bg-panel text-muted hover:text-foreground hover:bg-canvas"
                 }`}
             >
               <span>{day.label}</span>
@@ -115,7 +115,6 @@ export default function ParentTimetablePage() {
           );
         })}
       </div>
-
       {loading ? (
         <div className="flex h-48 items-center justify-center">
           <Loader2 className="size-6 animate-spin text-blue-600" />
@@ -144,7 +143,6 @@ export default function ParentTimetablePage() {
                   <p className="text-xs text-muted">Faculty: {period.teacherName || "Assigned Teacher"}</p>
                 </div>
               </div>
-
               <div className="flex items-center gap-1.5 rounded-xl border bg-canvas px-3 py-1.5 text-xs font-semibold text-foreground">
                 <Clock className="size-3.5 text-blue-600" />
                 <span>

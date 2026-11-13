@@ -15,6 +15,7 @@ import {
   LayoutDashboard,
   LogOut,
   Menu,
+  MessageCircle,
   Clock,
   UserCheck,
   Users,
@@ -77,6 +78,7 @@ export function TeacherShell({
     { label: "Take Attendance", href: "/teacher/attendance", icon: CalendarCheck2 },
     { label: "Homework", href: "/teacher/homework", icon: BookOpen },
     { label: "Exam Marks", href: "/teacher/exams", icon: FileCheck2 },
+    { label: "WhatsApp Communication", href: "/teacher/whatsapp", icon: MessageCircle },
     { label: "Leave Requests", href: "/teacher/leave", icon: Clock },
     { label: "Notifications", href: "/teacher/notifications", icon: Bell, badge: unreadCount },
   ];

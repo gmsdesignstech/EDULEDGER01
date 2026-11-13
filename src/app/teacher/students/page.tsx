@@ -11,7 +11,9 @@ import {
   Search,
   User,
   Users,
+  MessageCircle,
 } from "lucide-react";
+import { WhatsAppShareModal } from "@/components/whatsapp-share-modal";
 
 type StudentRecord = {
   id: string;
@@ -41,6 +43,7 @@ export default function TeacherStudentsPage() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [shareStudent, setShareStudent] = useState<StudentRecord | null>(null);
 
   useEffect(() => {
     fetch("/api/teacher/students")

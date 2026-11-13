@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUpRight,
   Eye,
+  FileDown,
   IdCard,
   Loader2,
   MoreHorizontal,
@@ -449,6 +450,15 @@ export function Students() {
           <ArrowUpRight className="size-4" />
           Promote
         </Link>
+        <a
+          className="btn-secondary inline-flex items-center gap-1.5"
+          href={`/api/credentials/students/pdf${classFilter && classFilter !== "all" ? `?class=${encodeURIComponent(classFilter)}` : ""}${section && section !== "all" ? `${classFilter && classFilter !== "all" ? "&" : "?"}section=${encodeURIComponent(section)}` : ""}`}
+          download
+          title="Download Student/Parent Credentials PDF"
+        >
+          <FileDown className="size-4" />
+          Credentials PDF
+        </a>
         <button
           className="btn-primary"
           onClick={() => void addStudent()}

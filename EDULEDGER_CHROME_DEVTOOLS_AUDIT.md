@@ -87,3 +87,4 @@
   * Querying `caches.match('/parent/fees')` $\rightarrow$ `undefined` (Network only).
   * Querying `caches.match('/teacher/marks')` $\rightarrow$ `undefined` (Network only).
 * **Cache Isolation Status**: **PASS** (100% compliance with student privacy regulations).
+

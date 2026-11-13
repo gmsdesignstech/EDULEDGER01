@@ -28,6 +28,7 @@ const navGroups = [
     items: [
       { label: "Overview", href: "/admin/dashboard", icon: LayoutDashboard },
       { label: "Schools", href: "/admin/schools", icon: Building2 },
+      { label: "Access & Credentials", href: "/admin/access-management", icon: ShieldCheck },
       { label: "Subscriptions", href: "/admin/subscriptions", icon: CreditCard },
       { label: "Payments & Revenue", href: "/admin/revenue-payments", icon: WalletCards },
       { label: "Users", href: "/admin/users", icon: Users },

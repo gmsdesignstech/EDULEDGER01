@@ -122,30 +122,40 @@ export function PwaInstallPrompt() {
     return null;
   }
 
-  // Determine portal context for personalized label
+  // Determine portal context for personalized label and styling
   let portalTitle = "Install EduLedger App";
   let portalSubtitle = "Add EduLedger to your home screen for quick access and instant notifications.";
   let appUrl = "https://eduledger.co.in";
+  let iconSrc = "/icons/icon-192.png";
+  let accentClass = "bg-blue-600 hover:bg-blue-700 shadow-blue-500/25";
+  let borderClass = "border-blue-200 dark:border-blue-900/50";
 
   if (pathname.startsWith("/teacher")) {
     portalTitle = "Install EduLedger Teacher App";
     portalSubtitle = "Quick attendance, timetable, and marks entry right from your home screen.";
     appUrl = "https://eduledger.co.in/teacher";
+    iconSrc = "/icons/teacher/icon-192.png";
+    accentClass = "bg-indigo-600 hover:bg-indigo-700 shadow-indigo-500/25";
+    borderClass = "border-indigo-200 dark:border-indigo-900/50";
   } else if (pathname.startsWith("/parent")) {
     portalTitle = "Install EduLedger Parent App";
     portalSubtitle = "Instant alerts for attendance, fee invoices, homework, and exam results.";
     appUrl = "https://eduledger.co.in/parent";
+    iconSrc = "/icons/parent/icon-192.png";
+    accentClass = "bg-blue-600 hover:bg-blue-700 shadow-blue-500/25";
+    borderClass = "border-blue-200 dark:border-blue-900/50";
   }
 
   return (
     <>
       <aside
         aria-label="PWA install banner"
-        className="fixed bottom-20 left-4 right-4 z-40 mx-auto max-w-md rounded-2xl border border-blue-200 bg-white/95 p-4 shadow-2xl backdrop-blur-md dark:border-blue-900/50 dark:bg-slate-900/95 sm:bottom-6 sm:left-auto sm:right-6"
+        className={`fixed bottom-20 left-4 right-4 z-40 mx-auto max-w-md rounded-2xl border ${borderClass} bg-white/95 p-4 shadow-2xl backdrop-blur-md dark:bg-slate-900/95 sm:bottom-6 sm:left-auto sm:right-6`}
       >
         <div className="flex items-start gap-3">
-          <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-blue-600 text-white shadow-md shadow-blue-500/20">
-            <Smartphone className="size-5" />
+          <div className="size-11 shrink-0 overflow-hidden rounded-xl border border-slate-200 bg-white p-0.5 shadow-md dark:border-slate-800">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={iconSrc} alt={portalTitle} className="size-full rounded-[10px] object-cover" />
           </div>
 
           <div className="min-w-0 flex-1">
@@ -174,7 +184,7 @@ export function PwaInstallPrompt() {
               <button
                 type="button"
                 onClick={handleInstallClick}
-                className="inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-3.5 py-1.5 text-xs font-bold text-white shadow hover:bg-blue-700 active:scale-95"
+                className={`inline-flex items-center gap-1.5 rounded-xl ${accentClass} px-3.5 py-1.5 text-xs font-bold text-white shadow active:scale-95 transition`}
               >
                 <Download className="size-3.5" />
                 <span>{isIos ? "Install on iOS" : "Install App"}</span>
