@@ -5,7 +5,7 @@ import { z } from "zod";
 import { createSession, findUserByEmail, recordUserLogin } from "@/lib/db";
 import { isPrivateAdmin } from "@/lib/admin-auth";
 import { SESSION_COOKIE } from "@/lib/session";
-import { logServerError } from "@/lib/server-errors";
+import { logServerError, serverErrorCategory } from "@/lib/server-errors";
 import { clearRateLimit, consumeRateLimit, rateLimitKey } from "@/lib/security";
 
 export const runtime = "nodejs";
@@ -92,6 +92,26 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     logServerError("admin.auth.login", error);
+    const category = serverErrorCategory(error);
+    if (category === "database_configuration") {
+      return NextResponse.json(
+        {
+          error:
+            process.env.NODE_ENV === "production"
+              ? "The administrator sign-in service is temporarily unavailable. Please try again shortly."
+              : "Database connection is not configured. Set DATABASE_URL in environment or .env.local.",
+        },
+        { status: 503 },
+      );
+    }
+    if (category === "database_unavailable") {
+      return NextResponse.json(
+        {
+          error: "The administrator database is temporarily unreachable. Please try again.",
+        },
+        { status: 503 },
+      );
+    }
     return NextResponse.json(
       { error: "The administrator sign-in service is temporarily unavailable. Please try again." },
       { status: 500 },

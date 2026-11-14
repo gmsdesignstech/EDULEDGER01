@@ -29,7 +29,11 @@ export function serverErrorCategory(error: unknown): ServerErrorCategory {
   if (CONFIGURATION_CODES.has(code)) return "database_configuration";
   if (SCHEMA_CODES.has(code)) return "database_schema";
   if (isUniqueConstraintError(error)) return "database_constraint";
-  if (/No PostgreSQL connection URL|DATABASE_URL must be/i.test(message))
+  if (
+    /No PostgreSQL connection URL|DATABASE_URL must be|DATABASE_URL is required|connection URL is configured|no local database fallback/i.test(
+      message,
+    )
+  )
     return "database_configuration";
   return "unknown";
 }
@@ -47,14 +51,17 @@ export function isUniqueConstraintError(error: unknown, constraint?: string) {
 
 export function logServerError(operation: string, error: unknown, context: Record<string, string | number | boolean | null> = {}) {
   const databaseError = error as DatabaseError;
+  const category = serverErrorCategory(error);
 
-  // Deliberately omit messages, queries, parameters and connection strings.
   console.error("Server operation failed", JSON.stringify({
     operation,
     errorType: error instanceof Error ? error.name : typeof error,
     errorCode:
       typeof databaseError?.code === "string" ? databaseError.code : undefined,
-    category: serverErrorCategory(error),
+    category,
+    diagnostic: category === "database_configuration" || category === "database_unavailable"
+      ? (error instanceof Error ? error.message.replace(/:\/\/([^:@]+):([^@]+)@/g, "://$1:[REDACTED]@") : "database error")
+      : undefined,
     timestamp: new Date().toISOString(),
     ...context,
   }));

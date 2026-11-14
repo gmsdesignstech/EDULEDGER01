@@ -46,8 +46,21 @@ export function assertTestPostgresTarget(url: string, productionIdentity: string
     throw new Error("Test PostgreSQL target matches the configured production identity.");
 }
 
+export function resolveDatabaseUrl(): string | undefined {
+  const url =
+    process.env.DATABASE_URL?.trim() ||
+    process.env.POSTGRES_URL?.trim() ||
+    process.env.DATABASE_URL_UNPOOLED?.trim() ||
+    process.env.POSTGRES_URL_NON_POOLING?.trim() ||
+    process.env.MIGRATION_DATABASE_URL?.trim();
+  if (url && !process.env.DATABASE_URL) {
+    process.env.DATABASE_URL = url;
+  }
+  return url;
+}
+
 export function assertRuntimePostgresTarget() {
-  const url = process.env.DATABASE_URL;
+  const url = resolveDatabaseUrl() || process.env.DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL is required; no local database fallback exists.");
   if (process.env.NODE_ENV === "development" && process.env.EDULEDGER_ENVIRONMENT !== "development")
     throw new Error("Development must be launched with the explicit EduLedger development environment configuration.");

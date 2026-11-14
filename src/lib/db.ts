@@ -1,6 +1,6 @@
 import "server-only";
 import postgres from "postgres";
-import { assertRuntimePostgresTarget } from "./postgres-target";
+import { assertRuntimePostgresTarget, resolveDatabaseUrl } from "./postgres-target";
 import { createHash, randomUUID } from "node:crypto";
 import { admissionYear, formatRollNumber, isValidStudentId, normalizeSchoolCode, parseStudentId } from "./roll-number";
 import { parseTeacherClasses, serializeTeacherClasses } from "./teacher-classes";
@@ -210,7 +210,7 @@ let client: Sql | undefined, initializing: Promise<void> | undefined;
 
 function connection() {
   assertRuntimePostgresTarget();
-  const url = process.env.DATABASE_URL;
+  const url = resolveDatabaseUrl() || process.env.DATABASE_URL;
   if (!url)
     throw new Error("No PostgreSQL connection URL is configured. Set DATABASE_URL to the approved PostgreSQL target.");
   if (!/^postgres(?:ql)?:\/\//i.test(url))
@@ -218,6 +218,25 @@ function connection() {
       "DATABASE_URL must be a postgres:// or postgresql:// TCP connection URL. This application cannot use a prisma+postgres:// Accelerate URL with postgres.js.",
     );
   if (client) return client;
+
+  let useSsl: "require" | undefined = undefined;
+  try {
+    const parsed = new URL(url);
+    const host = (parsed.hostname || "").toLowerCase();
+    const sslmode = parsed.searchParams.get("sslmode");
+    if (sslmode === "disable") {
+      useSsl = undefined;
+    } else if (sslmode === "require" || sslmode === "verify-ca" || sslmode === "verify-full") {
+      useSsl = "require";
+    } else if (host !== "localhost" && host !== "127.0.0.1" && host !== "::1") {
+      useSsl = "require";
+    } else if (process.env.NODE_ENV === "production") {
+      useSsl = "require";
+    }
+  } catch {
+    useSsl = process.env.NODE_ENV === "production" ? "require" : undefined;
+  }
+
   const sql = postgres(url, {
     // Serverless instances share the provider pool. Keep each warm instance
     // deliberately small so admin dashboards cannot exhaust connections when
@@ -226,7 +245,7 @@ function connection() {
     idle_timeout: 20,
     connect_timeout: 15,
     prepare: false,
-    ssl: process.env.NODE_ENV === "production" ? "require" : undefined,
+    ssl: useSsl,
   });
   const adapter: Sql = {
     unsafe: (query, args = []) =>
@@ -912,7 +931,14 @@ export async function findUserByEmailOrPhone(identifier: string) {
   const clean = identifier.trim();
   const lower = clean.toLowerCase();
   const digits = clean.replace(/[^0-9]/g, "");
-  const db = await ready();
+  let db: Sql;
+  try {
+    db = await ready();
+  } catch {
+    // If the serverless connection dropped during idle sleep, reset client and retry once
+    client = undefined;
+    db = await ready();
+  }
 
   // 1. Try exact email or login_id lookup in users table
   try {
