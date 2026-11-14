@@ -521,3 +521,258 @@ export async function generateStudentCredentialsPdf(params: {
   return await doc.save();
 }
 
+export type SingleTeacherCredentialPdfParams = {
+  school: SchoolCredentialMeta;
+  teacher: {
+    id: string;
+    name: string;
+    employeeId: string;
+    loginId?: string;
+    department?: string;
+    subject?: string;
+    email?: string;
+    phone?: string;
+    temporaryPassword?: string;
+    status?: string;
+  };
+  loginUrl: string;
+  issuedAt?: string;
+};
+
+export async function generateSingleTeacherCredentialPdf(
+  params: SingleTeacherCredentialPdfParams
+): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+  const page = doc.addPage([595, 842]); // Standard A4 portrait
+
+  const left = 40;
+  const contentWidth = 515;
+  const right = left + contentWidth;
+
+  // Header Banner
+  page.drawRectangle({
+    x: left,
+    y: 770,
+    width: contentWidth,
+    height: 42,
+    color: brandNavy,
+  });
+
+  page.drawText("EDULEDGER PLATFORM", {
+    x: left + 14,
+    y: 788,
+    size: 14,
+    font: bold,
+    color: white,
+  });
+
+  page.drawText("CONFIDENTIAL FACULTY CREDENTIAL SLIP", {
+    x: right - bold.widthOfTextAtSize("CONFIDENTIAL FACULTY CREDENTIAL SLIP", 9) - 14,
+    y: 790,
+    size: 9,
+    font: bold,
+    color: rgb(0.8, 0.85, 1),
+  });
+
+  // School Information
+  let currentY = 740;
+  page.drawText(params.school.name.toUpperCase(), {
+    x: left,
+    y: currentY,
+    size: 16,
+    font: bold,
+    color: inkText,
+  });
+
+  currentY -= 16;
+  page.drawText("Official Teacher Portal Access & Login Verification Document", {
+    x: left,
+    y: currentY,
+    size: 9,
+    font,
+    color: mutedText,
+  });
+
+  // Divider Line
+  currentY -= 14;
+  page.drawLine({
+    start: { x: left, y: currentY },
+    end: { x: right, y: currentY },
+    thickness: 1,
+    color: lineBorder,
+  });
+
+  // 1. Teacher Profile Box
+  currentY -= 30;
+  page.drawText("FACULTY MEMBER PROFILE", {
+    x: left,
+    y: currentY,
+    size: 11,
+    font: bold,
+    color: brandNavy,
+  });
+
+  currentY -= 10;
+  page.drawRectangle({
+    x: left,
+    y: currentY - 95,
+    width: contentWidth,
+    height: 95,
+    color: zebraBg,
+    borderColor: lineBorder,
+    borderWidth: 1,
+  });
+
+  const col1X = left + 16;
+  const col2X = left + 260;
+  let profileY = currentY - 22;
+
+  // Row 1
+  page.drawText("Full Name:", { x: col1X, y: profileY, size: 9, font: bold, color: mutedText });
+  page.drawText(params.teacher.name, { x: col1X + 75, y: profileY, size: 10, font: bold, color: inkText });
+
+  page.drawText("Employee ID:", { x: col2X, y: profileY, size: 9, font: bold, color: mutedText });
+  page.drawText(params.teacher.employeeId, { x: col2X + 85, y: profileY, size: 10, font: bold, color: brandNavy });
+
+  // Row 2
+  profileY -= 22;
+  page.drawText("Department:", { x: col1X, y: profileY, size: 9, font: bold, color: mutedText });
+  page.drawText(params.teacher.department || "General", { x: col1X + 75, y: profileY, size: 9, font, color: inkText });
+
+  page.drawText("Primary Subject:", { x: col2X, y: profileY, size: 9, font: bold, color: mutedText });
+  page.drawText(params.teacher.subject || "All Subjects", { x: col2X + 85, y: profileY, size: 9, font, color: inkText });
+
+  // Row 3
+  profileY -= 22;
+  page.drawText("Mobile No:", { x: col1X, y: profileY, size: 9, font: bold, color: mutedText });
+  page.drawText(params.teacher.phone || "—", { x: col1X + 75, y: profileY, size: 9, font, color: inkText });
+
+  page.drawText("Email Address:", { x: col2X, y: profileY, size: 9, font: bold, color: mutedText });
+  page.drawText(params.teacher.email || "—", { x: col2X + 85, y: profileY, size: 9, font, color: inkText });
+
+  // Row 4
+  profileY -= 20;
+  page.drawText("Account Status:", { x: col1X, y: profileY, size: 9, font: bold, color: mutedText });
+  page.drawText(params.teacher.status || "Active", { x: col1X + 75, y: profileY, size: 9, font: bold, color: accentGreen });
+
+  // 2. Credentials Card
+  currentY = profileY - 40;
+  page.drawText("LOGIN CREDENTIALS", {
+    x: left,
+    y: currentY,
+    size: 11,
+    font: bold,
+    color: brandNavy,
+  });
+
+  currentY -= 10;
+  page.drawRectangle({
+    x: left,
+    y: currentY - 120,
+    width: contentWidth,
+    height: 120,
+    color: rgb(0.96, 0.97, 1),
+    borderColor: brandIndigo,
+    borderWidth: 1.5,
+  });
+
+  let credY = currentY - 26;
+
+  page.drawText("Portal Login URL:", { x: col1X, y: credY, size: 10, font: bold, color: mutedText });
+  page.drawText(params.loginUrl, { x: col1X + 130, y: credY, size: 10, font: bold, color: brandIndigo });
+
+  credY -= 28;
+  page.drawText("Unique Login ID:", { x: col1X, y: credY, size: 10, font: bold, color: mutedText });
+  const loginIdToDisplay = params.teacher.loginId || params.teacher.employeeId;
+  page.drawText(loginIdToDisplay, { x: col1X + 130, y: credY, size: 12, font: bold, color: brandNavy });
+
+  credY -= 28;
+  page.drawText("Temporary Password:", { x: col1X, y: credY, size: 10, font: bold, color: mutedText });
+  page.drawText(params.teacher.temporaryPassword || "[Confidential — Retain Safe Copy]", {
+    x: col1X + 130,
+    y: credY,
+    size: 12,
+    font: bold,
+    color: rgb(0.7, 0.15, 0.15),
+  });
+
+  credY -= 24;
+  page.drawText("Accepted Usernames: Login ID, Registered Mobile Number, or Registered Email Address", {
+    x: col1X,
+    y: credY,
+    size: 8,
+    font,
+    color: mutedText,
+  });
+
+  // 3. Security Instructions Box
+  currentY = credY - 45;
+  page.drawText("IMPORTANT SECURITY INSTRUCTIONS", {
+    x: left,
+    y: currentY,
+    size: 11,
+    font: bold,
+    color: brandNavy,
+  });
+
+  currentY -= 10;
+  page.drawRectangle({
+    x: left,
+    y: currentY - 125,
+    width: contentWidth,
+    height: 125,
+    color: white,
+    borderColor: lineBorder,
+    borderWidth: 1,
+  });
+
+  let instrY = currentY - 22;
+  const instructions = [
+    "1. Access the Teacher Portal URL above in your desktop browser or mobile device (Chrome, Safari, Edge).",
+    "2. Enter your Unique Login ID (or registered Mobile Number / Email) and your Temporary Password.",
+    "3. First-time sign in requires setting a new secure personal password (minimum 8 characters).",
+    "4. Keep your password confidential. School administrators will never ask for your private password.",
+    "5. If you lose access or suspect unauthorized activity, contact your school administrator immediately.",
+  ];
+
+  for (const line of instructions) {
+    page.drawText(line, { x: col1X, y: instrY, size: 8.5, font, color: inkText });
+    instrY -= 20;
+  }
+
+  // 4. Verification and Signatory
+  currentY = instrY - 45;
+  const sigWidth = 180;
+
+  page.drawText("Date of Issuance:", { x: left + 10, y: currentY, size: 9, font: bold, color: mutedText });
+  page.drawText(params.issuedAt || new Date().toISOString().slice(0, 10), {
+    x: left + 100,
+    y: currentY,
+    size: 9,
+    font,
+    color: inkText,
+  });
+
+  const sigX = right - sigWidth - 10;
+  page.drawLine({
+    start: { x: sigX, y: currentY - 15 },
+    end: { x: sigX + sigWidth, y: currentY - 15 },
+    thickness: 1,
+    color: mutedText,
+  });
+  page.drawText("Authorized School Signatory / Seal", {
+    x: sigX + 15,
+    y: currentY - 28,
+    size: 8,
+    font: bold,
+    color: mutedText,
+  });
+
+  // Footer
+  drawFooter(page, 1, 1, font);
+
+  return await doc.save();
+}
+

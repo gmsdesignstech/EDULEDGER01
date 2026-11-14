@@ -51,7 +51,13 @@ export async function POST(request: Request) {
       }
     }
     return NextResponse.json({
-      user: { name: user.name, email: user.email, role: user.role },
+      user: {
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        mustChangePassword: Boolean(user.mustChangePassword),
+        loginId: user.loginId || undefined,
+      },
       subscription: subscription ? {
         status: subscription.status,
         paymentStatus: subscription.paymentStatus,

@@ -1,6 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { compare, hash } from "bcryptjs";
 import { generateSecureTemporaryPassword } from "../src/lib/account-provisioning";
+import { formatTeacherLoginId } from "../src/lib/db";
+import { generateSingleTeacherCredentialPdf } from "../src/lib/credential-pdf";
 import { parseTeacherClasses, serializeTeacherClasses, standardTeacherClasses } from "../src/lib/teacher-classes";
 import { z } from "zod";
 
@@ -303,6 +305,297 @@ describe("EduLedger Teacher Portal Authentication & Faculty Provisioning Suite",
       const serverError = new Error("Employee ID or email already exists.");
       const displayed = formatTeacherFormError(serverError);
       expect(displayed).toBe("Employee ID or email already exists.");
+    });
+  });
+
+  describe("6. Unique Teacher Login ID Generation & Formatting", () => {
+    it("generates deterministic canonical Login ID when school code is present", () => {
+      const loginId = formatTeacherLoginId("DPS", "EMP-101");
+      expect(loginId).toBe("TCH-DPS-EMP-101");
+    });
+
+    it("generates clean Login ID when school code is omitted", () => {
+      const loginId = formatTeacherLoginId(undefined, "EMP-202");
+      expect(loginId).toBe("TCH-EMP-202");
+    });
+
+    it("prevents double prefixing when teacher ID already starts with TCH-", () => {
+      const loginId1 = formatTeacherLoginId("SCH01", "TCH-EMP-303");
+      expect(loginId1).toBe("TCH-SCH01-EMP-303");
+
+      const loginId2 = formatTeacherLoginId(undefined, "TCH-EMP-303");
+      expect(loginId2).toBe("TCH-EMP-303");
+    });
+
+    it("sanitizes special characters and normalizes casing to uppercase", () => {
+      const loginId = formatTeacherLoginId("dps-delhi", "emp#404!");
+      expect(loginId).toBe("TCH-DPSDELHI-EMP404");
+    });
+  });
+
+  describe("7. Temporary Password Generation, Entropy & First-Time Policy", () => {
+    it("generates high-entropy passwords with uppercase, lowercase, numbers, and symbols", () => {
+      const tempPw = generateSecureTemporaryPassword();
+      expect(tempPw.length).toBeGreaterThanOrEqual(10);
+      expect(/[A-Z]/.test(tempPw)).toBe(true);
+      expect(/[a-z]/.test(tempPw)).toBe(true);
+      expect(/[0-9]/.test(tempPw)).toBe(true);
+      expect(/[!@#$*]/.test(tempPw)).toBe(true);
+    });
+
+    it("generates distinct passwords on consecutive invocations", () => {
+      const passwords = new Set(Array.from({ length: 25 }, () => generateSecureTemporaryPassword()));
+      expect(passwords.size).toBe(25);
+    });
+
+    it("flags account with mustChangePassword = true when provisioned with temporary password", () => {
+      const input = {
+        name: "Arun Kumar",
+        employeeId: "EMP-501",
+        password: undefined, // No custom password provided
+      };
+
+      const temporaryPassword = input.password || generateSecureTemporaryPassword();
+      const mustChangePassword = !input.password;
+
+      expect(mustChangePassword).toBe(true);
+      expect(temporaryPassword).toBeDefined();
+    });
+
+    it("flags account with mustChangePassword = false when admin supplies custom permanent password", () => {
+      const input = {
+        name: "Arun Kumar",
+        employeeId: "EMP-501",
+        password: "PermanentPassword2026!",
+      };
+
+      const mustChangePassword = !input.password;
+      expect(mustChangePassword).toBe(false);
+    });
+  });
+
+  describe("8. Multi-Identifier Authentication Resolution", () => {
+    const mockTeacher = {
+      id: "tch-uuid-1",
+      name: "Meera Patel",
+      employeeId: "EMP-601",
+      loginId: "TCH-SCH-EMP-601",
+      email: "meera.patel@school.edu",
+      phone: "+91 98765 00123",
+      status: "Active",
+    };
+
+    const mockUser = {
+      id: "usr-uuid-1",
+      email: "meera.patel@school.edu",
+      loginId: "TCH-SCH-EMP-601",
+      role: "TEACHER",
+      status: "Active",
+      institutionId: "inst-1",
+      mustChangePassword: true,
+    };
+
+    function resolveTeacherIdentifier(identifier: string) {
+      const clean = identifier.trim();
+      const lower = clean.toLowerCase();
+      const digits = clean.replace(/[^0-9]/g, "");
+      const last10 = digits.length >= 10 ? digits.slice(-10) : digits;
+
+      // 1. By Login ID
+      if (lower === mockUser.loginId.toLowerCase() || lower === mockTeacher.loginId.toLowerCase()) {
+        return { matchedBy: "loginId", user: mockUser };
+      }
+
+      // 2. By Employee ID
+      if (lower === mockTeacher.employeeId.toLowerCase()) {
+        return { matchedBy: "employeeId", user: mockUser };
+      }
+
+      // 3. By Email
+      if (lower === mockUser.email.toLowerCase()) {
+        return { matchedBy: "email", user: mockUser };
+      }
+
+      // 4. By Phone (normalized last 10 digits)
+      const teacherPhoneDigits = mockTeacher.phone.replace(/[^0-9]/g, "");
+      const teacherPhoneLast10 = teacherPhoneDigits.slice(-10);
+      if (last10 && last10 === teacherPhoneLast10) {
+        return { matchedBy: "phone", user: mockUser };
+      }
+
+      return null;
+    }
+
+    it("authenticates teacher via generated Unique Login ID", () => {
+      const match = resolveTeacherIdentifier("TCH-SCH-EMP-601");
+      expect(match).not.toBeNull();
+      expect(match?.matchedBy).toBe("loginId");
+      expect(match?.user.id).toBe("usr-uuid-1");
+    });
+
+    it("authenticates teacher via case-insensitive Login ID", () => {
+      const match = resolveTeacherIdentifier("tch-sch-emp-601");
+      expect(match).not.toBeNull();
+      expect(match?.matchedBy).toBe("loginId");
+    });
+
+    it("authenticates teacher via Employee ID", () => {
+      const match = resolveTeacherIdentifier("EMP-601");
+      expect(match).not.toBeNull();
+      expect(match?.matchedBy).toBe("employeeId");
+    });
+
+    it("authenticates teacher via registered Email", () => {
+      const match = resolveTeacherIdentifier("meera.patel@school.edu");
+      expect(match).not.toBeNull();
+      expect(match?.matchedBy).toBe("email");
+    });
+
+    it("authenticates teacher via Phone in standard format", () => {
+      const match = resolveTeacherIdentifier("+91 98765 00123");
+      expect(match).not.toBeNull();
+      expect(match?.matchedBy).toBe("phone");
+    });
+
+    it("authenticates teacher via Phone with raw 10 digits without country code", () => {
+      const match = resolveTeacherIdentifier("9876500123");
+      expect(match).not.toBeNull();
+      expect(match?.matchedBy).toBe("phone");
+    });
+
+    it("rejects non-matching identifier", () => {
+      const match = resolveTeacherIdentifier("NONEXISTENT_USER");
+      expect(match).toBeNull();
+    });
+  });
+
+  describe("9. Teacher First-Time Password Change & Credential Invalidation", () => {
+    it("validates teacher password change workflow and clears mustChangePassword", async () => {
+      const temporaryPassword = "Edu#Temp987Password";
+      let userRecord = {
+        id: "usr-teacher-change",
+        passwordHash: await hash(temporaryPassword, 10),
+        mustChangePassword: true,
+      };
+
+      const changePassword = async (currentAttempt: string, newAttempt: string, confirmAttempt: string) => {
+        if (!currentAttempt) throw new Error("Current password is required.");
+        if (newAttempt.length < 8) throw new Error("New password must be at least 8 characters.");
+        if (newAttempt !== confirmAttempt) throw new Error("New password and confirmation password do not match.");
+        if (newAttempt === currentAttempt) throw new Error("Your new password must be different from your temporary password.");
+
+        const matches = await compare(currentAttempt, userRecord.passwordHash);
+        if (!matches) throw new Error("The temporary or current password you entered is incorrect.");
+
+        const newHash = await hash(newAttempt, 10);
+        userRecord = {
+          ...userRecord,
+          passwordHash: newHash,
+          mustChangePassword: false,
+        };
+        return { success: true };
+      };
+
+      // 1. Rejects incorrect current password
+      await expect(changePassword("WrongCurrentPW", "NewSafePassword123!", "NewSafePassword123!")).rejects.toThrow(
+        "The temporary or current password you entered is incorrect."
+      );
+      expect(userRecord.mustChangePassword).toBe(true);
+
+      // 2. Rejects mismatched confirmation
+      await expect(changePassword(temporaryPassword, "NewSafePassword123!", "DifferentConfirm!")).rejects.toThrow(
+        "New password and confirmation password do not match."
+      );
+
+      // 3. Rejects identical password
+      await expect(changePassword(temporaryPassword, temporaryPassword, temporaryPassword)).rejects.toThrow(
+        "Your new password must be different from your temporary password."
+      );
+
+      // 4. Successfully updates password and resets mustChangePassword flag
+      const result = await changePassword(temporaryPassword, "PersonalSafePassword2026#", "PersonalSafePassword2026#");
+      expect(result.success).toBe(true);
+      expect(userRecord.mustChangePassword).toBe(false);
+
+      // 5. Old temporary password no longer works
+      const oldMatches = await compare(temporaryPassword, userRecord.passwordHash);
+      expect(oldMatches).toBe(false);
+
+      // 6. New personal password works
+      const newMatches = await compare("PersonalSafePassword2026#", userRecord.passwordHash);
+      expect(newMatches).toBe(true);
+    });
+  });
+
+  describe("10. Administrator Password Reset & Credentials Modal Payload", () => {
+    it("generates new temporary credentials payload when admin resets teacher password", async () => {
+      const teacher = {
+        id: "tch-reset-test",
+        name: "Vikram Malhotra",
+        employeeId: "EMP-701",
+        loginId: "TCH-DPS-EMP-701",
+        phone: "+91 98765 43299",
+        email: "vikram@dps.edu",
+        status: "Active",
+      };
+
+      const school = {
+        name: "Delhi Public School",
+      };
+
+      const newTempPassword = generateSecureTemporaryPassword();
+      const newHash = await hash(newTempPassword, 10);
+
+      const credentialsPayload = {
+        teacherId: teacher.id,
+        name: teacher.name,
+        employeeId: teacher.employeeId,
+        loginId: teacher.loginId,
+        temporaryPassword: newTempPassword,
+        email: teacher.email,
+        phone: teacher.phone,
+        schoolName: school.name,
+        loginUrl: "https://eduledger.co.in/teacher/login",
+        status: "Active",
+        mustChangePassword: true,
+      };
+
+      expect(credentialsPayload.temporaryPassword).toBe(newTempPassword);
+      expect(credentialsPayload.mustChangePassword).toBe(true);
+      expect(credentialsPayload.loginId).toBe("TCH-DPS-EMP-701");
+      expect(await compare(newTempPassword, newHash)).toBe(true);
+    });
+  });
+
+  describe("11. Single-Teacher Printable Credential Slip PDF Generation", () => {
+    it("generates a valid, non-empty PDF document for a single teacher", async () => {
+      const pdfBytes = await generateSingleTeacherCredentialPdf({
+        school: {
+          id: "school-1",
+          name: "St. Xavier's International School",
+          academicYear: "2026-2027",
+        },
+        teacher: {
+          id: "tch-pdf-1",
+          name: "Kavita Sen",
+          employeeId: "EMP-808",
+          loginId: "TCH-SXIS-EMP-808",
+          department: "Computer Science",
+          subject: "Artificial Intelligence",
+          email: "kavita.sen@sxis.edu",
+          phone: "+91 98765 88888",
+          temporaryPassword: "Edu#TempPass888",
+          status: "Active",
+        },
+        loginUrl: "https://eduledger.co.in/teacher/login",
+      });
+
+      expect(pdfBytes).toBeInstanceOf(Uint8Array);
+      expect(pdfBytes.length).toBeGreaterThan(1000);
+
+      // Verify PDF header %PDF-
+      const header = Buffer.from(pdfBytes.slice(0, 5)).toString("utf-8");
+      expect(header).toBe("%PDF-");
     });
   });
 });

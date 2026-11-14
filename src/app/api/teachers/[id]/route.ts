@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { hash } from "bcryptjs";
-import { deleteTeacher, getCompleteSettings, listTeachers, updateTeacher, upsertTeacherAccount } from "@/lib/db";
+import { deleteTeacher, formatTeacherLoginId, getCompleteSettings, getInstitution, listTeachers, updateTeacher, upsertTeacherAccount } from "@/lib/db";
 import { parseTeacherClasses, serializeTeacherClasses, standardTeacherClasses, teacherClassesInputSchema } from "@/lib/teacher-classes";
 import { isUniqueConstraintError, logServerError } from "@/lib/server-errors";
 import { currentUser } from "@/lib/session";
@@ -52,7 +52,10 @@ export async function PUT(
       return NextResponse.json({ error: "Teacher not found." }, { status: 404 });
     }
 
-    const settings = await getCompleteSettings(user.institutionId);
+    const [settings, school] = await Promise.all([
+      getCompleteSettings(user.institutionId),
+      getInstitution(user.institutionId),
+    ]);
     const allowed = new Set(
       [
         ...standardTeacherClasses,
@@ -67,10 +70,13 @@ export async function PUT(
       );
     }
 
+    const schoolCode = settings.schoolCode || school.name.replace(/[^A-Za-z0-9]/g, "").slice(0, 4).toUpperCase();
+    const loginId = current.loginId || formatTeacherLoginId(schoolCode, parsed.data.employeeId);
+
     const teacher = await updateTeacher(
       user.institutionId,
       id,
-      { ...parsed.data, classes: serializeTeacherClasses(parsed.data.classes) },
+      { ...parsed.data, loginId, classes: serializeTeacherClasses(parsed.data.classes) },
       user.id,
     );
 
@@ -86,6 +92,7 @@ export async function PUT(
       status: parsed.data.status,
       previousEmail: current.email,
       teacherId: id,
+      loginId,
       passwordHash,
     });
 

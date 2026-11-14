@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 import { requireRole } from "@/lib/session";
 import { getInstitution } from "@/lib/db";
 import { TeacherShell } from "@/components/teacher-shell";
@@ -17,6 +18,9 @@ export const metadata: Metadata = {
 
 export default async function TeacherLayout({ children }: { children: React.ReactNode }) {
   const user = await requireRole("TEACHER", "/teacher");
+  if (user.mustChangePassword) {
+    redirect("/teacher/change-password");
+  }
   const school = await getInstitution(user.institutionId);
   return (
     <TeacherShell

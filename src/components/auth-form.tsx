@@ -49,7 +49,11 @@ export function AuthForm({ mode, initialStudentCount = 1, afterSubscriptionHref,
           acceptedTerms: mode === "register" ? form.get("acceptedTerms") === "on" : undefined,
         }),
       });
-      const result = await parseApiResponse<{ error?: string; user?: { role?: string }; subscription?: { status?: string; paymentStatus?: string; orderId?: string | null } }>(
+      const result = await parseApiResponse<{
+        error?: string;
+        user?: { role?: string; mustChangePassword?: boolean; loginId?: string };
+        subscription?: { status?: string; paymentStatus?: string; orderId?: string | null };
+      }>(
         response,
         mode === "register"
           ? "Registration could not be completed. Please try again."
@@ -57,17 +61,20 @@ export function AuthForm({ mode, initialStudentCount = 1, afterSubscriptionHref,
       );
       const submittedStudentCount=Number(form.get("studentCount"));
       const registrationDestination=annualCheckoutHref(submittedStudentCount);
-      router.replace(mode === "register"
+      const destination = mode === "register"
         ? afterSubscriptionHref
           ? `${registrationDestination}&next=${encodeURIComponent(afterSubscriptionHref)}`
           : registrationDestination
-        : schoolAccountDestination({
-            role:result.user?.role??"",
-            subscriptionStatus:result.subscription?.status,
-            paymentStatus:result.subscription?.paymentStatus,
-            orderId:result.subscription?.orderId,
-            requested:afterLoginHref,
-          }));
+        : (result.user?.role === "TEACHER" && result.user?.mustChangePassword)
+          ? "/teacher/change-password"
+          : schoolAccountDestination({
+              role:result.user?.role??"",
+              subscriptionStatus:result.subscription?.status,
+              paymentStatus:result.subscription?.paymentStatus,
+              orderId:result.subscription?.orderId,
+              requested:afterLoginHref,
+            });
+      router.replace(destination);
       router.refresh();
     } catch (reason) {
       setError(
@@ -169,8 +176,8 @@ export function AuthForm({ mode, initialStudentCount = 1, afterSubscriptionHref,
             )}
             <Field
               name="email"
-              label={audience === "parent" || audience === "teacher" ? "Registered Mobile Number or Email" : "Email address"}
-              placeholder={audience === "parent" ? "e.g. 9876543210 or parent@school.edu" : audience === "teacher" ? "e.g. 9876543210 or teacher@school.edu" : "admin@school.edu"}
+              label={audience === "parent" ? "Registered Mobile Number or Email" : audience === "teacher" ? "Login ID, Mobile Number or Email" : "Email address"}
+              placeholder={audience === "parent" ? "e.g. 9876543210 or parent@school.edu" : audience === "teacher" ? "e.g. TCH-EMP101, 9876543210, or teacher@school.edu" : "admin@school.edu"}
               type={audience === "parent" || audience === "teacher" ? "text" : "email"}
               autoComplete={audience === "parent" || audience === "teacher" ? "username" : "email"}
             />

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { hash } from "bcryptjs";
-import { getCompleteSettings, listTeachers, saveTeacher, upsertTeacherAccount } from "@/lib/db";
+import { formatTeacherLoginId, getCompleteSettings, getInstitution, listTeachers, saveTeacher, upsertTeacherAccount } from "@/lib/db";
 import { parseTeacherClasses, standardTeacherClasses, teacherClassesInputSchema, serializeTeacherClasses } from "@/lib/teacher-classes";
 import { isUniqueConstraintError, logServerError } from "@/lib/server-errors";
 import { currentUser } from "@/lib/session";
@@ -75,7 +75,10 @@ export async function POST(request: Request) {
       );
     }
 
-    const settings = await getCompleteSettings(user.institutionId);
+    const [settings, school] = await Promise.all([
+      getCompleteSettings(user.institutionId),
+      getInstitution(user.institutionId),
+    ]);
     const allowed = new Set(
       [
         ...standardTeacherClasses,
@@ -89,9 +92,12 @@ export async function POST(request: Request) {
       );
     }
 
+    const schoolCode = settings.schoolCode || school.name.replace(/[^A-Za-z0-9]/g, "").slice(0, 4).toUpperCase();
+    const loginId = formatTeacherLoginId(schoolCode, parsed.data.employeeId);
+
     const teacher = await saveTeacher(
       user.institutionId,
-      { ...parsed.data, classes: serializeTeacherClasses(parsed.data.classes) },
+      { ...parsed.data, loginId, classes: serializeTeacherClasses(parsed.data.classes) },
       user.id,
     );
 
@@ -99,6 +105,7 @@ export async function POST(request: Request) {
     const plainPassword =
       parsed.data.password || (temporaryPassword = generateSecureTemporaryPassword());
     const passwordHash = await hash(plainPassword, 10);
+    const mustChangePassword = !parsed.data.password;
 
     await upsertTeacherAccount(user.institutionId, {
       name: parsed.data.name,
@@ -107,10 +114,33 @@ export async function POST(request: Request) {
       phone: parsed.data.phone,
       status: parsed.data.status,
       teacherId: teacher.id,
+      loginId,
+      mustChangePassword,
     });
 
+    const host = request.headers.get("x-forwarded-host") || request.headers.get("host") || "eduledger.co.in";
+    const proto = request.headers.get("x-forwarded-proto") || "https";
+    const origin = `${proto}://${host}`;
+    const loginUrl = `${origin}/teacher/login`;
+
     return NextResponse.json(
-      { teacher, temporaryPassword: temporaryPassword || undefined },
+      {
+        teacher: { ...teacher, loginId },
+        temporaryPassword: temporaryPassword || undefined,
+        credentials: {
+          teacherId: teacher.id,
+          name: teacher.name,
+          employeeId: teacher.employeeId,
+          loginId,
+          temporaryPassword: plainPassword,
+          email: teacher.email || undefined,
+          phone: teacher.phone,
+          schoolName: school.name,
+          loginUrl,
+          status: teacher.status,
+          mustChangePassword,
+        },
+      },
       { status: 201 },
     );
   } catch (error) {

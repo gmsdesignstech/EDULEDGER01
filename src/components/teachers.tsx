@@ -2,16 +2,29 @@
 
 import { readApiJson } from "@/lib/api-response";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, Eye, FileDown, Loader2, Pencil, Plus, Search, X } from "lucide-react";
+import { Check, ChevronDown, Copy, Eye, EyeOff, FileDown, KeyRound, Loader2, Pencil, Plus, Printer, Search, ShieldCheck, X } from "lucide-react";
 import { DataActions } from "./data-actions";
 import { DeleteRecordButton } from "./delete-record-button";
 import { parseTeacherClasses, standardTeacherClasses } from "@/lib/teacher-classes";
 import { useEduCache, useEduQuery } from "./edu-cache-provider";
 
 type Teacher = {
-  id: string; name: string; employeeId: string; email: string; phone: string;
+  id: string; name: string; employeeId: string; loginId?: string; email: string; phone: string;
   department: string; subject: string; classes: string; assignedClasses?: string[];
   joiningDate: string; salary: number; status: string; createdAt: string;
+};
+
+type TeacherCredentials = {
+  teacherId: string;
+  name: string;
+  employeeId: string;
+  loginId: string;
+  temporaryPassword?: string;
+  email?: string;
+  phone?: string;
+  schoolName?: string;
+  loginUrl?: string;
+  status: string;
 };
 const empty = {
   name: "", employeeId: "", email: "", phone: "", department: "", subject: "",
@@ -26,6 +39,8 @@ export function Teachers() {
   const [open, setOpen] = useState(false);
   const [edit, setEdit] = useState<Teacher | null>(null);
   const [view, setView] = useState<Teacher | null>(null);
+  const [credentials, setCredentials] = useState<TeacherCredentials | null>(null);
+  const [resettingId, setResettingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [formError, setFormError] = useState("");
@@ -37,9 +52,28 @@ export function Teachers() {
   useEffect(() => { if (queryError) setMessage(queryError instanceof Error ? queryError.message : "Could not load teachers.") }, [queryError]);
 
   const rows = useMemo(() => data.filter(teacher =>
-    [teacher.name, teacher.employeeId, teacher.subject, teacher.department, teacher.classes]
-      .join(" ").toLowerCase().includes(query.toLowerCase()),
+    [teacher.name, teacher.employeeId, teacher.loginId, teacher.subject, teacher.department, teacher.classes]
+      .filter(Boolean).join(" ").toLowerCase().includes(query.toLowerCase()),
   ), [data, query]);
+
+  async function handleResetPassword(teacher: Teacher) {
+    setResettingId(teacher.id);
+    setMessage("");
+    try {
+      const res = await fetch(`/api/teachers/${teacher.id}/reset-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || "Could not reset teacher password.");
+      setCredentials(result.credentials);
+      await load();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Could not reset teacher password.");
+    } finally {
+      setResettingId(null);
+    }
+  }
 
   async function submit(event: React.FormEvent<HTMLFormElement>, classes: string[]) {
     event.preventDefault();
@@ -54,17 +88,26 @@ export function Teachers() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const result = await readApiJson<{ teacher?: Teacher; temporaryPassword?: string; error?: string }>(response);
+      const result = await readApiJson<{
+        teacher?: Teacher;
+        temporaryPassword?: string;
+        credentials?: TeacherCredentials;
+        error?: string;
+      }>(response);
       if (!response.ok) throw new Error(result.error || "Could not save the teacher.");
       setOpen(false);
       setEdit(null);
-      setMessage(
-        edit
-          ? "Teacher updated successfully."
-          : result.temporaryPassword
-            ? `Teacher added. Temporary password: ${result.temporaryPassword}`
-            : "Teacher added successfully.",
-      );
+      if (result.credentials) {
+        setCredentials(result.credentials);
+      } else {
+        setMessage(
+          edit
+            ? "Teacher updated successfully."
+            : result.temporaryPassword
+              ? `Teacher added. Temporary password: ${result.temporaryPassword}`
+              : "Teacher added successfully.",
+        );
+      }
       try {
         await load();
       } catch (loadErr) {
@@ -100,12 +143,56 @@ export function Teachers() {
           <td className="px-4 py-4 font-bold">{teacher.name}</td><td className="px-4">{teacher.employeeId}</td><td className="px-4">{teacher.department}</td><td className="px-4">{teacher.subject}</td>
           <td className="px-4"><div className="flex max-w-sm flex-wrap gap-1.5">{(teacher.assignedClasses || parseTeacherClasses(teacher.classes)).length ? (teacher.assignedClasses || parseTeacherClasses(teacher.classes)).map(name => <span key={name} className="rounded-lg bg-violet-100 px-2 py-1 text-xs font-semibold text-violet-700">{name}</span>) : <span className="text-muted">—</span>}</div></td>
           <td className="px-4"><b className="block">{teacher.phone}</b><span className="text-xs text-muted">{teacher.email}</span></td><td className="px-4">{teacher.joiningDate}</td><td className="px-4"><span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-bold text-emerald-700">{teacher.status}</span></td>
-          <td className="px-4"><div className="flex gap-1"><button className="icon-btn" aria-label={`View ${teacher.name}`} onClick={() => setView(teacher)}><Eye /></button>{canEdit && <><button className="icon-btn" aria-label={`Edit ${teacher.name}`} onClick={() => { setEdit(teacher); setFormError(""); setOpen(true); }}><Pencil /></button><DeleteRecordButton label={`teacher ${teacher.name}`} details={`Employee ${teacher.employeeId} · ${teacher.department}`} url={`/api/teachers/${teacher.id}`} onComplete={async () => { await load(); setMessage("Teacher archived successfully."); }} onError={setMessage} action="Archive" /></>}</div></td>
+          <td className="px-4">
+            <div className="flex items-center gap-1">
+              <button className="icon-btn" aria-label={`View ${teacher.name}`} onClick={() => setView(teacher)}>
+                <Eye className="size-4" />
+              </button>
+              <a
+                href={`/api/credentials/teachers/${teacher.id}/pdf`}
+                download
+                className="icon-btn"
+                title="Download Faculty Credential PDF"
+                aria-label={`Download credentials for ${teacher.name}`}
+              >
+                <FileDown className="size-4" />
+              </a>
+              {canEdit && (
+                <>
+                  <button
+                    className="icon-btn text-amber-600 hover:text-amber-700"
+                    title="Reset Password & View Credentials"
+                    aria-label={`Reset password for ${teacher.name}`}
+                    disabled={resettingId === teacher.id}
+                    onClick={() => handleResetPassword(teacher)}
+                  >
+                    {resettingId === teacher.id ? <Loader2 className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
+                  </button>
+                  <button
+                    className="icon-btn"
+                    aria-label={`Edit ${teacher.name}`}
+                    onClick={() => { setEdit(teacher); setFormError(""); setOpen(true); }}
+                  >
+                    <Pencil className="size-4" />
+                  </button>
+                  <DeleteRecordButton
+                    label={`teacher ${teacher.name}`}
+                    details={`Employee ${teacher.employeeId} · ${teacher.department}`}
+                    url={`/api/teachers/${teacher.id}`}
+                    onComplete={async () => { await load(); setMessage("Teacher archived successfully."); }}
+                    onError={setMessage}
+                    action="Archive"
+                  />
+                </>
+              )}
+            </div>
+          </td>
         </tr>)}</tbody>
       </table>{!rows.length && <p className="p-12 text-center text-muted">No teachers found. Add your first teacher to get started.</p>}</div>}
     </div>
     {open && <TeacherModal key={edit?.id || "new"} teacher={edit} classOptions={classOptions} saving={saving} error={formError} close={() => { setOpen(false); setEdit(null); }} submit={submit} />}
     {view && <TeacherDetails teacher={view} close={() => setView(null)} />}
+    {credentials && <TeacherCredentialsModal credentials={credentials} close={() => setCredentials(null)} />}
   </div>;
 }
 
@@ -177,4 +264,191 @@ function TeacherDetails({ teacher, close }: { teacher: Teacher; close: () => voi
     <dl className="mt-6 grid gap-4 text-sm sm:grid-cols-2">{[["Primary subject", teacher.subject], ["Email", teacher.email], ["Phone", teacher.phone], ["Joining date", teacher.joiningDate], ["Status", teacher.status]].map(([label, value]) => <div key={label}><dt className="text-muted">{label}</dt><dd className="mt-1 font-semibold">{value || "—"}</dd></div>)}</dl>
     <div className="mt-6"><h3 className="font-bold">Assigned Classes</h3><div className="mt-3 flex flex-wrap gap-2">{classes.length ? classes.map(name => <span key={name} className="rounded-lg bg-violet-100 px-3 py-1.5 text-sm font-semibold text-violet-700">{name}</span>) : <span className="text-sm text-muted">No classes assigned</span>}</div></div>
   </div></div>;
+}
+
+function TeacherCredentialsModal({
+  credentials,
+  close,
+}: {
+  credentials: TeacherCredentials;
+  close: () => void;
+}) {
+  const [showPassword, setShowPassword] = useState(true);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+
+  const loginUrl = credentials.loginUrl || `${typeof window !== "undefined" ? window.location.origin : ""}/teacher/login`;
+
+  function copy(text: string, label: string) {
+    if (typeof navigator !== "undefined" && navigator.clipboard) {
+      navigator.clipboard.writeText(text);
+      setCopiedField(label);
+      setTimeout(() => setCopiedField(null), 2500);
+    }
+  }
+
+  function copyAll() {
+    const text = [
+      `EDULEDGER TEACHER PORTAL CREDENTIALS`,
+      `School: ${credentials.schoolName || "School"}`,
+      `Faculty Name: ${credentials.name}`,
+      `Employee ID: ${credentials.employeeId}`,
+      `Login ID: ${credentials.loginId}`,
+      credentials.phone ? `Registered Mobile: ${credentials.phone}` : null,
+      credentials.email ? `Registered Email: ${credentials.email}` : null,
+      credentials.temporaryPassword ? `Temporary Password: ${credentials.temporaryPassword}` : null,
+      `Portal Login URL: ${loginUrl}`,
+      `First-Time Sign-In: You will be prompted to create your new private password upon login.`,
+    ].filter(Boolean).join("\n");
+    copy(text, "all");
+  }
+
+  return (
+    <div className="fixed inset-0 z-[80] grid place-items-center bg-black/60 p-4 backdrop-blur-sm print:static print:bg-transparent print:p-0">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Teacher Login Credentials"
+        className="card max-h-[92vh] w-full max-w-lg overflow-y-auto p-6 sm:p-8 print:border-none print:shadow-none"
+      >
+        <div className="flex items-start justify-between">
+          <div className="flex items-center gap-3">
+            <div className="rounded-xl bg-emerald-100 p-2.5 text-emerald-700">
+              <ShieldCheck className="size-6" />
+            </div>
+            <div>
+              <p className="label text-emerald-700 font-bold uppercase tracking-wider text-xs">Access Generated</p>
+              <h2 className="text-xl font-black">Teacher Portal Credentials</h2>
+            </div>
+          </div>
+          <button type="button" aria-label="Close credentials modal" onClick={close} className="print:hidden">
+            <X className="size-5" />
+          </button>
+        </div>
+
+        <p className="mt-3 text-sm text-muted">
+          Teacher credentials for <b>{credentials.name}</b> are ready. Save, copy, or print these credentials for the faculty member.
+        </p>
+
+        {copiedField && (
+          <p role="status" className="mt-3 rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-2 text-xs font-semibold text-emerald-800">
+            {copiedField === "all" ? "All credentials copied to clipboard!" : `${copiedField} copied to clipboard!`}
+          </p>
+        )}
+
+        <div className="mt-5 space-y-3 rounded-2xl border bg-canvas p-4 text-sm">
+          <div className="flex items-center justify-between border-b pb-2.5">
+            <div>
+              <span className="text-xs uppercase font-bold text-muted">Teacher Name</span>
+              <p className="font-bold text-base">{credentials.name}</p>
+            </div>
+            <div className="text-right">
+              <span className="text-xs uppercase font-bold text-muted">Employee ID</span>
+              <p className="font-mono font-semibold">{credentials.employeeId}</p>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between border-b pb-2.5">
+            <div>
+              <span className="text-xs uppercase font-bold text-muted">Unique Login ID</span>
+              <p className="font-mono text-base font-black text-brand">{credentials.loginId}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => copy(credentials.loginId, "Login ID")}
+              className="btn-secondary text-xs px-2.5 py-1.5 inline-flex items-center gap-1 print:hidden"
+            >
+              <Copy className="size-3.5" />
+              <span>Copy</span>
+            </button>
+          </div>
+
+          {credentials.temporaryPassword && (
+            <div className="flex items-center justify-between border-b pb-2.5">
+              <div>
+                <span className="text-xs uppercase font-bold text-muted">Temporary Password</span>
+                <p className="font-mono text-base font-bold text-red-600">
+                  {showPassword ? credentials.temporaryPassword : "••••••••••••"}
+                </p>
+              </div>
+              <div className="flex items-center gap-1.5 print:hidden">
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="icon-btn"
+                  title={showPassword ? "Hide password" : "Show password"}
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                >
+                  {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => copy(credentials.temporaryPassword || "", "Password")}
+                  className="btn-secondary text-xs px-2.5 py-1.5 inline-flex items-center gap-1"
+                >
+                  <Copy className="size-3.5" />
+                  <span>Copy</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="flex items-center justify-between border-b pb-2.5">
+            <div className="max-w-[280px] truncate">
+              <span className="text-xs uppercase font-bold text-muted">Teacher Portal URL</span>
+              <p className="font-mono text-xs text-muted truncate">{loginUrl}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => copy(loginUrl, "Portal URL")}
+              className="btn-secondary text-xs px-2.5 py-1.5 inline-flex items-center gap-1 print:hidden"
+            >
+              <Copy className="size-3.5" />
+              <span>Copy</span>
+            </button>
+          </div>
+
+          <div className="flex items-center justify-between text-xs pt-1">
+            <span className="text-muted">Account Status: <b className="text-emerald-700">Active</b></span>
+            <span className="text-muted">Sign-in Options: <b>Login ID, Mobile, or Email</b></span>
+          </div>
+        </div>
+
+        <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/80 p-3 text-xs text-amber-900 leading-relaxed">
+          <b>First-Time Password Policy:</b> The teacher will be prompted to create their private password immediately upon first sign-in using this temporary password.
+        </div>
+
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-2 print:hidden">
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={copyAll}
+              className="btn-secondary inline-flex items-center gap-1.5 text-xs font-bold"
+            >
+              <Copy className="size-3.5" />
+              <span>Copy All</span>
+            </button>
+            <a
+              href={`/api/credentials/teachers/${credentials.teacherId}/pdf`}
+              download
+              className="btn-secondary inline-flex items-center gap-1.5 text-xs font-bold"
+            >
+              <FileDown className="size-3.5" />
+              <span>Download PDF</span>
+            </a>
+            <button
+              type="button"
+              onClick={() => window.print()}
+              className="btn-secondary inline-flex items-center gap-1.5 text-xs font-bold"
+            >
+              <Printer className="size-3.5" />
+              <span>Print</span>
+            </button>
+          </div>
+          <button type="button" onClick={close} className="btn-primary text-xs font-bold px-4 py-2">
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }

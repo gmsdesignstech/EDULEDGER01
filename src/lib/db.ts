@@ -33,6 +33,8 @@ export type DbUser = {
   name: string;
   role: string;
   institutionId: string;
+  mustChangePassword?: boolean;
+  loginId?: string;
 };
 type FeeStatus = "Paid" | "Partially Paid" | "Pending" | "Overdue";
 export type DbStudent = {
@@ -77,6 +79,7 @@ export type DbTeacher = {
   id: string;
   name: string;
   employeeId: string;
+  loginId?: string;
   email: string;
   phone: string;
   department: string;
@@ -381,9 +384,12 @@ CREATE INDEX IF NOT EXISTS idx_notif_deliv_user ON notification_deliveries(user_
 CREATE INDEX IF NOT EXISTS idx_notif_deliv_event ON notification_deliveries(event_id);
 `);
     await sql.unsafe(`CREATE TABLE IF NOT EXISTS admin_settings(id TEXT PRIMARY KEY,application_name TEXT NOT NULL DEFAULT 'EduLedger',support_email TEXT NOT NULL DEFAULT '',currency TEXT NOT NULL DEFAULT 'INR',timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata',date_format TEXT NOT NULL DEFAULT 'DD/MM/YYYY',session_timeout_minutes INTEGER NOT NULL DEFAULT 10080,updated_by TEXT,updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);`);
-    const additions={settings:["result_grade_bands TEXT NOT NULL DEFAULT ''","result_overall_pass_percent INTEGER NOT NULL DEFAULT 35","result_require_subject_pass BOOLEAN NOT NULL DEFAULT TRUE","result_ranking_enabled BOOLEAN NOT NULL DEFAULT FALSE","result_principal_remarks TEXT NOT NULL DEFAULT ''","result_class_teacher_remarks TEXT NOT NULL DEFAULT ''","result_report_format TEXT NOT NULL DEFAULT 'Standard'","timetable_start_time TEXT NOT NULL DEFAULT '09:00'","timetable_end_time TEXT NOT NULL DEFAULT '16:00'","timetable_period_minutes INTEGER NOT NULL DEFAULT 40","timetable_short_break_minutes INTEGER NOT NULL DEFAULT 15","timetable_lunch_minutes INTEGER NOT NULL DEFAULT 40","timetable_periods_per_day INTEGER NOT NULL DEFAULT 9","timetable_working_days TEXT NOT NULL DEFAULT '1,2,3,4,5'","timetable_timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata'","school_code TEXT NOT NULL DEFAULT ''","dise_code TEXT NOT NULL DEFAULT ''","website TEXT NOT NULL DEFAULT ''","city TEXT NOT NULL DEFAULT ''","state TEXT NOT NULL DEFAULT ''","pin_code TEXT NOT NULL DEFAULT ''","principal_name TEXT NOT NULL DEFAULT ''","registration_number TEXT NOT NULL DEFAULT ''","affiliation TEXT NOT NULL DEFAULT ''","motto TEXT NOT NULL DEFAULT ''","school_type TEXT NOT NULL DEFAULT ''","fee_receipt_title TEXT NOT NULL DEFAULT 'Fee Payment Receipt'","fee_receipt_subheader TEXT NOT NULL DEFAULT 'Standard Fee Receipt Template'","payslip_title TEXT NOT NULL DEFAULT 'Pay Slip'","payslip_subheader TEXT NOT NULL DEFAULT 'Standard Pay Slip Template'","footer_text TEXT NOT NULL DEFAULT ''","signature_label TEXT NOT NULL DEFAULT 'Authorized Signatory'","attendance_correction_window_hours INTEGER NOT NULL DEFAULT 24","upi_enabled BOOLEAN NOT NULL DEFAULT FALSE","upi_id TEXT NOT NULL DEFAULT ''","payee_name TEXT NOT NULL DEFAULT ''","payment_method_name TEXT NOT NULL DEFAULT 'School UPI / QR Code'","bank_name TEXT NOT NULL DEFAULT ''","account_number TEXT NOT NULL DEFAULT ''","ifsc_code TEXT NOT NULL DEFAULT ''","payment_instructions TEXT NOT NULL DEFAULT ''"],students:["blood_group TEXT","mother_name TEXT","special_quota TEXT","special_quota_description TEXT","academic_year TEXT NOT NULL DEFAULT ''","leaving_date TEXT","leaving_reason TEXT NOT NULL DEFAULT ''","graduation_date TEXT","leaving_remarks TEXT NOT NULL DEFAULT ''","photo_path TEXT"],payments:["payment_frequency TEXT NOT NULL DEFAULT 'Custom'","original_amount DOUBLE PRECISION NOT NULL DEFAULT 0","discount_type TEXT NOT NULL DEFAULT 'Fixed'","discount_value DOUBLE PRECISION NOT NULL DEFAULT 0","discount_amount DOUBLE PRECISION NOT NULL DEFAULT 0","discount_reason TEXT NOT NULL DEFAULT ''","late_fee DOUBLE PRECISION NOT NULL DEFAULT 0","net_payable DOUBLE PRECISION NOT NULL DEFAULT 0"],users:["status TEXT NOT NULL DEFAULT 'Active'","last_login_at TIMESTAMPTZ"],institutions:["status TEXT NOT NULL DEFAULT 'Active'"],subscriptions:["payment_status TEXT NOT NULL DEFAULT 'Pending'","plan_type TEXT NOT NULL DEFAULT 'Yearly'","currency TEXT NOT NULL DEFAULT 'INR'","renewal_date TIMESTAMPTZ","auto_renew BOOLEAN NOT NULL DEFAULT FALSE","last_notification_sent TIMESTAMPTZ","grace_period_days INTEGER NOT NULL DEFAULT 0"],notifications:["link TEXT NOT NULL DEFAULT ''","delivery_status TEXT NOT NULL DEFAULT 'SENT'"],admin_settings:["subscription_warning_days TEXT NOT NULL DEFAULT '30,15,7,3,1,0,-1'","subscription_notifications_enabled BOOLEAN NOT NULL DEFAULT TRUE","in_app_notifications_enabled BOOLEAN NOT NULL DEFAULT TRUE","email_notifications_enabled BOOLEAN NOT NULL DEFAULT FALSE","subscription_grace_days INTEGER NOT NULL DEFAULT 0"]} as const;
+    const additions={settings:["result_grade_bands TEXT NOT NULL DEFAULT ''","result_overall_pass_percent INTEGER NOT NULL DEFAULT 35","result_require_subject_pass BOOLEAN NOT NULL DEFAULT TRUE","result_ranking_enabled BOOLEAN NOT NULL DEFAULT FALSE","result_principal_remarks TEXT NOT NULL DEFAULT ''","result_class_teacher_remarks TEXT NOT NULL DEFAULT ''","result_report_format TEXT NOT NULL DEFAULT 'Standard'","timetable_start_time TEXT NOT NULL DEFAULT '09:00'","timetable_end_time TEXT NOT NULL DEFAULT '16:00'","timetable_period_minutes INTEGER NOT NULL DEFAULT 40","timetable_short_break_minutes INTEGER NOT NULL DEFAULT 15","timetable_lunch_minutes INTEGER NOT NULL DEFAULT 40","timetable_periods_per_day INTEGER NOT NULL DEFAULT 9","timetable_working_days TEXT NOT NULL DEFAULT '1,2,3,4,5'","timetable_timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata'","school_code TEXT NOT NULL DEFAULT ''","dise_code TEXT NOT NULL DEFAULT ''","website TEXT NOT NULL DEFAULT ''","city TEXT NOT NULL DEFAULT ''","state TEXT NOT NULL DEFAULT ''","pin_code TEXT NOT NULL DEFAULT ''","principal_name TEXT NOT NULL DEFAULT ''","registration_number TEXT NOT NULL DEFAULT ''","affiliation TEXT NOT NULL DEFAULT ''","motto TEXT NOT NULL DEFAULT ''","school_type TEXT NOT NULL DEFAULT ''","fee_receipt_title TEXT NOT NULL DEFAULT 'Fee Payment Receipt'","fee_receipt_subheader TEXT NOT NULL DEFAULT 'Standard Fee Receipt Template'","payslip_title TEXT NOT NULL DEFAULT 'Pay Slip'","payslip_subheader TEXT NOT NULL DEFAULT 'Standard Pay Slip Template'","footer_text TEXT NOT NULL DEFAULT ''","signature_label TEXT NOT NULL DEFAULT 'Authorized Signatory'","attendance_correction_window_hours INTEGER NOT NULL DEFAULT 24","upi_enabled BOOLEAN NOT NULL DEFAULT FALSE","upi_id TEXT NOT NULL DEFAULT ''","payee_name TEXT NOT NULL DEFAULT ''","payment_method_name TEXT NOT NULL DEFAULT 'School UPI / QR Code'","bank_name TEXT NOT NULL DEFAULT ''","account_number TEXT NOT NULL DEFAULT ''","ifsc_code TEXT NOT NULL DEFAULT ''","payment_instructions TEXT NOT NULL DEFAULT ''"],students:["blood_group TEXT","mother_name TEXT","special_quota TEXT","special_quota_description TEXT","academic_year TEXT NOT NULL DEFAULT ''","leaving_date TEXT","leaving_reason TEXT NOT NULL DEFAULT ''","graduation_date TEXT","leaving_remarks TEXT NOT NULL DEFAULT ''","photo_path TEXT"],payments:["payment_frequency TEXT NOT NULL DEFAULT 'Custom'","original_amount DOUBLE PRECISION NOT NULL DEFAULT 0","discount_type TEXT NOT NULL DEFAULT 'Fixed'","discount_value DOUBLE PRECISION NOT NULL DEFAULT 0","discount_amount DOUBLE PRECISION NOT NULL DEFAULT 0","discount_reason TEXT NOT NULL DEFAULT ''","late_fee DOUBLE PRECISION NOT NULL DEFAULT 0","net_payable DOUBLE PRECISION NOT NULL DEFAULT 0"],users:["status TEXT NOT NULL DEFAULT 'Active'","last_login_at TIMESTAMPTZ","login_id TEXT","must_change_password BOOLEAN NOT NULL DEFAULT FALSE"],teachers:["login_id TEXT NOT NULL DEFAULT ''"],institutions:["status TEXT NOT NULL DEFAULT 'Active'"],subscriptions:["payment_status TEXT NOT NULL DEFAULT 'Pending'","plan_type TEXT NOT NULL DEFAULT 'Yearly'","currency TEXT NOT NULL DEFAULT 'INR'","renewal_date TIMESTAMPTZ","auto_renew BOOLEAN NOT NULL DEFAULT FALSE","last_notification_sent TIMESTAMPTZ","grace_period_days INTEGER NOT NULL DEFAULT 0"],notifications:["link TEXT NOT NULL DEFAULT ''","delivery_status TEXT NOT NULL DEFAULT 'SENT'"],admin_settings:["subscription_warning_days TEXT NOT NULL DEFAULT '30,15,7,3,1,0,-1'","subscription_notifications_enabled BOOLEAN NOT NULL DEFAULT TRUE","in_app_notifications_enabled BOOLEAN NOT NULL DEFAULT TRUE","email_notifications_enabled BOOLEAN NOT NULL DEFAULT FALSE","subscription_grace_days INTEGER NOT NULL DEFAULT 0"]} as const;
 
       for(const [table,definitions] of Object.entries(additions))for(const definition of definitions)await sql.unsafe(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${definition}`);
+
+    await sql.unsafe("CREATE INDEX IF NOT EXISTS idx_users_login_id ON users(LOWER(login_id)) WHERE login_id IS NOT NULL;");
+    await sql.unsafe("CREATE INDEX IF NOT EXISTS idx_teachers_login_id ON teachers(LOWER(login_id)) WHERE login_id <> '';");
 
     const fixedPricingAdditions={subscriptions:["student_count_at_purchase INTEGER","pricing_model TEXT NOT NULL DEFAULT 'PER_STUDENT'","plan_version INTEGER NOT NULL DEFAULT 1"],subscription_plans:["pricing_model TEXT NOT NULL DEFAULT 'PER_STUDENT'","plan_version INTEGER NOT NULL DEFAULT 1","effective_at TIMESTAMPTZ","eligible_new_schools BOOLEAN NOT NULL DEFAULT FALSE"],subscription_payments:["student_count_at_purchase INTEGER","pricing_model TEXT NOT NULL DEFAULT 'PER_STUDENT'","plan_version INTEGER NOT NULL DEFAULT 1"]} as const;
 
@@ -566,6 +572,11 @@ export async function ensureEssentialProductionSchema(customDb?: Sql): Promise<v
       -- User status and login audit
       ALTER TABLE users ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'Active';
       ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS login_id TEXT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE teachers ADD COLUMN IF NOT EXISTS login_id TEXT NOT NULL DEFAULT '';
+      CREATE INDEX IF NOT EXISTS idx_users_login_id ON users(LOWER(login_id)) WHERE login_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_teachers_login_id ON teachers(LOWER(login_id)) WHERE login_id <> '';
 
       -- Essential authentication and notification tables
       CREATE TABLE IF NOT EXISTS parent_students(
@@ -876,9 +887,22 @@ export async function getInstitution(institutionId: string) {
     await ready(),
   );
 }
+export function formatTeacherLoginId(schoolCode: string | undefined, employeeId: string): string {
+  const rawEmp = (employeeId || "").trim().toUpperCase().replace(/[^A-Z0-9_-]/g, "");
+  const cleanCode = (schoolCode || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  let cleanEmp = rawEmp.replace(/^TCH[-_]?/i, "");
+  if (cleanCode && cleanEmp.startsWith(`${cleanCode}-`)) {
+    cleanEmp = cleanEmp.slice(cleanCode.length + 1);
+  }
+  if (cleanCode) {
+    return `TCH-${cleanCode}-${cleanEmp}`;
+  }
+  return `TCH-${cleanEmp}`;
+}
+
 export async function findUserByEmail(email: string) {
   return await row<DbUser & { passwordHash: string; status:string }>(
-    'SELECT id,email,name,password_hash AS "passwordHash",role,status,institution_id AS "institutionId" FROM users WHERE LOWER(email)=?',
+    'SELECT id,email,name,password_hash AS "passwordHash",role,status,institution_id AS "institutionId",COALESCE(must_change_password, FALSE) AS "mustChangePassword",COALESCE(login_id, \'\') AS "loginId" FROM users WHERE LOWER(email)=?',
     [email.toLowerCase()],
     await ready(),
   );
@@ -890,23 +914,28 @@ export async function findUserByEmailOrPhone(identifier: string) {
   const digits = clean.replace(/[^0-9]/g, "");
   const db = await ready();
 
-  // 1. Try exact email lookup
+  // 1. Try exact email or login_id lookup in users table
   try {
     const u = await row<DbUser & { passwordHash: string; status: string }>(
-      'SELECT id,email,name,password_hash AS "passwordHash",role,status,institution_id AS "institutionId" FROM users WHERE LOWER(email)=?',
-      [lower],
+      'SELECT id,email,name,password_hash AS "passwordHash",role,status,institution_id AS "institutionId",COALESCE(must_change_password, FALSE) AS "mustChangePassword",COALESCE(login_id, \'\') AS "loginId" FROM users WHERE LOWER(email)=? OR (login_id IS NOT NULL AND LOWER(TRIM(login_id))=?)',
+      [lower, lower],
       db,
     );
     if (u) {
       if (u.role === "TEACHER") {
         try {
-          const t = await row<{ status: string }>(
-            "SELECT status FROM teachers WHERE institution_id=? AND (LOWER(TRIM(email))=LOWER(TRIM(?)) OR ? LIKE 'teacher_%') ORDER BY CASE WHEN status='Active' THEN 0 ELSE 1 END LIMIT 1",
-            [u.institutionId, u.email, u.email],
+          const t = await row<{ status: string; loginId: string }>(
+            "SELECT status, COALESCE(login_id, '') AS \"loginId\" FROM teachers WHERE institution_id=? AND (LOWER(TRIM(email))=LOWER(TRIM(?)) OR ? LIKE 'teacher_%' OR (login_id <> '' AND LOWER(TRIM(login_id))=?)) ORDER BY CASE WHEN status='Active' THEN 0 ELSE 1 END LIMIT 1",
+            [u.institutionId, u.email, u.email, lower],
             db,
           );
-          if (t && t.status !== "Active") {
-            return { ...u, status: "Inactive" };
+          if (t) {
+            if (t.status !== "Active") {
+              return { ...u, status: "Inactive" };
+            }
+            if (t.loginId && !u.loginId) {
+              u.loginId = t.loginId;
+            }
           }
         } catch {
           // If teachers table not reachable, use existing status
@@ -918,6 +947,35 @@ export async function findUserByEmailOrPhone(identifier: string) {
     // Ignore and proceed
   }
 
+  // 1b. Teacher lookup by login_id or employee_id across teachers joined with users
+  try {
+    const teacherById = await row<DbUser & { passwordHash: string; status: string }>(
+      `SELECT u.id, u.email, u.name, u.password_hash AS "passwordHash", u.role,
+              CASE WHEN t.status <> 'Active' THEN 'Inactive' ELSE u.status END AS status,
+              u.institution_id AS "institutionId",
+              COALESCE(u.must_change_password, FALSE) AS "mustChangePassword",
+              COALESCE(u.login_id, t.login_id, '') AS "loginId"
+       FROM users u
+       JOIN teachers t ON t.institution_id = u.institution_id AND (
+         (t.email <> '' AND LOWER(t.email) = LOWER(u.email)) OR
+         u.email = 'teacher_' || ? || '@' || LOWER(t.institution_id) || '.internal' OR
+         u.email LIKE 'teacher_' || ? || '@%' OR
+         (t.email = '' AND u.email LIKE 'teacher_%')
+       )
+       WHERE u.role='TEACHER' AND (
+         (t.login_id <> '' AND LOWER(TRIM(t.login_id)) = ?) OR
+         LOWER(TRIM(t.employee_id)) = ?
+       )
+       ORDER BY CASE WHEN t.status='Active' THEN 0 ELSE 1 END, t.created_at DESC
+       LIMIT 1`,
+      [digits, digits.length >= 10 ? digits.slice(-10) : digits, lower, lower],
+      db,
+    );
+    if (teacherById) return teacherById;
+  } catch {
+    // Ignore
+  }
+
   // 2. Parent & Teacher lookup by phone
   if (digits.length >= 7) {
     const last10 = digits.length > 10 ? digits.slice(-10) : digits;
@@ -925,7 +983,9 @@ export async function findUserByEmailOrPhone(identifier: string) {
     // 2a. Parent lookup with parent_students join
     try {
       const parentUser = await row<DbUser & { passwordHash: string; status: string }>(
-        `SELECT u.id, u.email, u.name, u.password_hash AS "passwordHash", u.role, u.status, u.institution_id AS "institutionId"
+        `SELECT u.id, u.email, u.name, u.password_hash AS "passwordHash", u.role, u.status, u.institution_id AS "institutionId",
+                COALESCE(u.must_change_password, FALSE) AS "mustChangePassword",
+                COALESCE(u.login_id, '') AS "loginId"
          FROM users u
          JOIN students s ON s.institution_id = u.institution_id
          LEFT JOIN parent_students ps ON ps.parent_user_id=u.id AND ps.student_id=s.id AND ps.institution_id=s.institution_id
@@ -942,7 +1002,9 @@ export async function findUserByEmailOrPhone(identifier: string) {
       // Fallback: simplified parent lookup without parent_students join
       try {
         const simpleParent = await row<DbUser & { passwordHash: string; status: string }>(
-          `SELECT u.id, u.email, u.name, u.password_hash AS "passwordHash", u.role, u.status, u.institution_id AS "institutionId"
+          `SELECT u.id, u.email, u.name, u.password_hash AS "passwordHash", u.role, u.status, u.institution_id AS "institutionId",
+                  COALESCE(u.must_change_password, FALSE) AS "mustChangePassword",
+                  COALESCE(u.login_id, '') AS "loginId"
            FROM users u
            JOIN students s ON s.institution_id = u.institution_id
            WHERE u.role='PARENT' AND s.status<>'Deleted' AND (
@@ -963,7 +1025,9 @@ export async function findUserByEmailOrPhone(identifier: string) {
       const teacherUser = await row<DbUser & { passwordHash: string; status: string }>(
         `SELECT u.id, u.email, u.name, u.password_hash AS "passwordHash", u.role,
                 CASE WHEN t.status <> 'Active' THEN 'Inactive' ELSE u.status END AS status,
-                u.institution_id AS "institutionId"
+                u.institution_id AS "institutionId",
+                COALESCE(u.must_change_password, FALSE) AS "mustChangePassword",
+                COALESCE(u.login_id, t.login_id, '') AS "loginId"
          FROM users u
          JOIN teachers t ON t.institution_id = u.institution_id AND (
            (t.email <> '' AND LOWER(t.email) = LOWER(u.email)) OR
@@ -990,7 +1054,9 @@ export async function findUserByEmailOrPhone(identifier: string) {
         const simpleTeacher = await row<DbUser & { passwordHash: string; status: string }>(
           `SELECT u.id, u.email, u.name, u.password_hash AS "passwordHash", u.role,
                   CASE WHEN t.status <> 'Active' THEN 'Inactive' ELSE u.status END AS status,
-                  u.institution_id AS "institutionId"
+                  u.institution_id AS "institutionId",
+                  COALESCE(u.must_change_password, FALSE) AS "mustChangePassword",
+                  COALESCE(u.login_id, t.login_id, '') AS "loginId"
            FROM users u
            JOIN teachers t ON t.institution_id = u.institution_id
            WHERE u.role='TEACHER' AND (
@@ -1013,7 +1079,9 @@ export async function findUserByEmailOrPhone(identifier: string) {
     // 2c. Direct match on users email/identifier
     try {
       const directUser = await row<DbUser & { passwordHash: string; status: string }>(
-        `SELECT id,email,name,password_hash AS "passwordHash",role,status,institution_id AS "institutionId"
+        `SELECT id,email,name,password_hash AS "passwordHash",role,status,institution_id AS "institutionId",
+                COALESCE(must_change_password, FALSE) AS "mustChangePassword",
+                COALESCE(login_id, '') AS "loginId"
          FROM users
          WHERE email=? OR email LIKE ? OR email LIKE ?`,
         [clean, `%${digits}%`, `%${last10}%`],
@@ -1131,7 +1199,7 @@ export async function createSession(userId: string) {
 }
 export async function getUserBySession(token: string) {
   return await row<DbUser>(
-    'SELECT u.id,u.email,u.name,u.role,u.institution_id AS "institutionId" FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? AND s.expires_at>CURRENT_TIMESTAMP AND u.status=\'Active\'',
+    'SELECT u.id,u.email,u.name,u.role,u.institution_id AS "institutionId",COALESCE(u.must_change_password, FALSE) AS "mustChangePassword",COALESCE(u.login_id, \'\') AS "loginId" FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? AND s.expires_at>CURRENT_TIMESTAMP AND u.status=\'Active\'',
     [token],
     await ready(),
   );
@@ -1460,8 +1528,8 @@ export async function deleteStudent(
 export async function listTeachers(institutionId: string, search = "") {
   const q = `%${search}%`;
   return await rows<DbTeacher>(
-    'SELECT id,name,employee_id AS "employeeId",email,phone,department,subject,assigned_classes AS classes,joining_date AS "joiningDate",salary,status,created_at::text AS "createdAt" FROM teachers WHERE institution_id=? AND status<>\'Deleted\' AND (name ILIKE ? OR employee_id ILIKE ? OR subject ILIKE ?) ORDER BY created_at DESC',
-    [institutionId, q, q, q],
+    'SELECT id,name,employee_id AS "employeeId",COALESCE(login_id, \'\') AS "loginId",email,phone,department,subject,assigned_classes AS classes,joining_date AS "joiningDate",salary,status,created_at::text AS "createdAt" FROM teachers WHERE institution_id=? AND status<>\'Deleted\' AND (name ILIKE ? OR employee_id ILIKE ? OR subject ILIKE ? OR COALESCE(login_id, \'\') ILIKE ?) ORDER BY created_at DESC',
+    [institutionId, q, q, q, q],
     await ready(),
   );
 }
@@ -1568,6 +1636,8 @@ export async function upsertTeacherAccount(
     status?: string;
     previousEmail?: string;
     teacherId?: string;
+    loginId?: string;
+    mustChangePassword?: boolean;
   },
 ) {
   const db = await ready();
@@ -1582,13 +1652,14 @@ export async function upsertTeacherAccount(
 
   const previousEmail = (input.previousEmail || "").trim().toLowerCase();
   const accountStatus = input.status === "Active" ? "Active" : input.status ? "Inactive" : "Active";
+  const cleanLoginId = (input.loginId || "").trim() || null;
 
-  let existing: { id: string; email: string; passwordHash: string } | undefined;
+  let existing: { id: string; email: string; passwordHash: string; loginId?: string } | undefined;
 
   // 1. Check by previous email if available and distinct
   if (previousEmail && previousEmail !== effectiveEmail) {
-    existing = await row<{ id: string; email: string; passwordHash: string }>(
-      'SELECT id, email, password_hash AS "passwordHash" FROM users WHERE institution_id=? AND role=\'TEACHER\' AND LOWER(TRIM(email))=?',
+    existing = await row<{ id: string; email: string; passwordHash: string; loginId?: string }>(
+      'SELECT id, email, password_hash AS "passwordHash", login_id AS "loginId" FROM users WHERE institution_id=? AND role=\'TEACHER\' AND LOWER(TRIM(email))=?',
       [institutionId, previousEmail],
       db,
     );
@@ -1596,8 +1667,8 @@ export async function upsertTeacherAccount(
 
   // 2. Check by effective email
   if (!existing) {
-    existing = await row<{ id: string; email: string; passwordHash: string }>(
-      'SELECT id, email, password_hash AS "passwordHash" FROM users WHERE LOWER(TRIM(email))=?',
+    existing = await row<{ id: string; email: string; passwordHash: string; loginId?: string }>(
+      'SELECT id, email, password_hash AS "passwordHash", login_id AS "loginId" FROM users WHERE LOWER(TRIM(email))=?',
       [effectiveEmail],
       db,
     );
@@ -1605,9 +1676,18 @@ export async function upsertTeacherAccount(
 
   // 3. Check by synthetic phone email
   if (!existing && digits) {
-    existing = await row<{ id: string; email: string; passwordHash: string }>(
-      'SELECT id, email, password_hash AS "passwordHash" FROM users WHERE institution_id=? AND role=\'TEACHER\' AND (email=? OR email LIKE ?)',
+    existing = await row<{ id: string; email: string; passwordHash: string; loginId?: string }>(
+      'SELECT id, email, password_hash AS "passwordHash", login_id AS "loginId" FROM users WHERE institution_id=? AND role=\'TEACHER\' AND (email=? OR email LIKE ?)',
       [institutionId, `teacher_${digits}@${institutionId.toLowerCase()}.internal`, `teacher_${digits}@%`],
+      db,
+    );
+  }
+
+  // 4. Check by login_id if provided
+  if (!existing && cleanLoginId) {
+    existing = await row<{ id: string; email: string; passwordHash: string; loginId?: string }>(
+      'SELECT id, email, password_hash AS "passwordHash", login_id AS "loginId" FROM users WHERE institution_id=? AND role=\'TEACHER\' AND LOWER(TRIM(login_id))=?',
+      [institutionId, cleanLoginId.toLowerCase()],
       db,
     );
   }
@@ -1615,18 +1695,27 @@ export async function upsertTeacherAccount(
   if (existing) {
     if (input.passwordHash) {
       await run(
-        "UPDATE users SET name=?, email=?, password_hash=?, role='TEACHER', institution_id=?, status=? WHERE id=?",
-        [input.name, effectiveEmail, input.passwordHash, institutionId, accountStatus, existing.id],
+        "UPDATE users SET name=?, email=?, password_hash=?, role='TEACHER', institution_id=?, status=?, login_id=COALESCE(?, login_id), must_change_password=COALESCE(?, must_change_password) WHERE id=?",
+        [input.name, effectiveEmail, input.passwordHash, institutionId, accountStatus, cleanLoginId, input.mustChangePassword !== undefined ? input.mustChangePassword : null, existing.id],
         db,
       );
     } else {
       await run(
-        "UPDATE users SET name=?, email=?, role='TEACHER', institution_id=?, status=? WHERE id=?",
-        [input.name, effectiveEmail, institutionId, accountStatus, existing.id],
+        "UPDATE users SET name=?, email=?, role='TEACHER', institution_id=?, status=?, login_id=COALESCE(?, login_id), must_change_password=COALESCE(?, must_change_password) WHERE id=?",
+        [input.name, effectiveEmail, institutionId, accountStatus, cleanLoginId, input.mustChangePassword !== undefined ? input.mustChangePassword : null, existing.id],
         db,
       );
     }
-    return { id: existing.id, email: effectiveEmail, name: input.name, role: "TEACHER", institutionId, status: accountStatus };
+    return {
+      id: existing.id,
+      email: effectiveEmail,
+      name: input.name,
+      role: "TEACHER",
+      institutionId,
+      status: accountStatus,
+      loginId: cleanLoginId || existing.loginId,
+      mustChangePassword: input.mustChangePassword,
+    };
   }
 
   // New user account
@@ -1639,11 +1728,20 @@ export async function upsertTeacherAccount(
   }
 
   await run(
-    "INSERT INTO users(id, email, name, password_hash, role, institution_id, status) VALUES(?,?,?,?,?,?,?)",
-    [id, effectiveEmail, input.name, hashToUse, "TEACHER", institutionId, accountStatus],
+    "INSERT INTO users(id, email, name, password_hash, role, institution_id, status, login_id, must_change_password) VALUES(?,?,?,?,?,?,?,?,?)",
+    [id, effectiveEmail, input.name, hashToUse, "TEACHER", institutionId, accountStatus, cleanLoginId, input.mustChangePassword ?? false],
     db,
   );
-  return { id, email: effectiveEmail, name: input.name, role: "TEACHER", institutionId, status: accountStatus };
+  return {
+    id,
+    email: effectiveEmail,
+    name: input.name,
+    role: "TEACHER",
+    institutionId,
+    status: accountStatus,
+    loginId: cleanLoginId || undefined,
+    mustChangePassword: input.mustChangePassword ?? false,
+  };
 }
 export async function saveTeacher(
   institutionId: string,
@@ -1652,8 +1750,9 @@ export async function saveTeacher(
 ) {
   const db = await ready(),
     id = randomUUID();
+  const loginId = (input.loginId || "").trim();
   await run(
-    "INSERT INTO teachers(id,institution_id,name,employee_id,email,phone,department,subject,assigned_classes,joining_date,salary,status)VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+    "INSERT INTO teachers(id,institution_id,name,employee_id,email,phone,department,subject,assigned_classes,joining_date,salary,status,login_id)VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
     [
       id,
       institutionId,
@@ -1667,6 +1766,7 @@ export async function saveTeacher(
       input.joiningDate,
       input.salary,
       input.status,
+      loginId,
     ],
     db,
   );
@@ -1676,7 +1776,7 @@ export async function saveTeacher(
     "Teacher Added",
     "Teacher",
     id,
-    { name: input.name },
+    { name: input.name, loginId },
     db,
   );
   await activity(
@@ -1698,9 +1798,10 @@ export async function updateTeacher(
   userId?: string,
 ) {
   const db = await ready();
-  const previous = await row<DbTeacher>("SELECT email, phone, status FROM teachers WHERE id=? AND institution_id=?", [id, institutionId], db);
+  const previous = await row<DbTeacher>("SELECT email, phone, status, COALESCE(login_id, '') AS \"loginId\" FROM teachers WHERE id=? AND institution_id=?", [id, institutionId], db);
+  const loginId = (input.loginId || previous?.loginId || "").trim();
   await run(
-    "UPDATE teachers SET name=?,employee_id=?,email=?,phone=?,department=?,subject=?,assigned_classes=?,joining_date=?,salary=?,status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND institution_id=?",
+    "UPDATE teachers SET name=?,employee_id=?,email=?,phone=?,department=?,subject=?,assigned_classes=?,joining_date=?,salary=?,status=?,login_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND institution_id=?",
     [
       input.name,
       input.employeeId,
@@ -1712,6 +1813,7 @@ export async function updateTeacher(
       input.joiningDate,
       input.salary,
       input.status,
+      loginId,
       id,
       institutionId,
     ],
@@ -1725,6 +1827,7 @@ export async function updateTeacher(
       status: input.status,
       previousEmail: previous?.email,
       teacherId: id,
+      loginId: loginId || undefined,
     });
   } catch {
     // Non-fatal if users table not yet populated or in isolated test
@@ -1735,7 +1838,7 @@ export async function updateTeacher(
     "Teacher Updated",
     "Teacher",
     id,
-    { name: input.name },
+    { name: input.name, loginId },
     db,
   );
   return (await listTeachers(institutionId)).find((x) => x.id === id);
