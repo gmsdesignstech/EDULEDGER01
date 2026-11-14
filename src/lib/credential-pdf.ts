@@ -10,6 +10,8 @@ export type TeacherCredentialItem = {
   phone: string;
   status: string;
   temporaryPassword?: string;
+  mustChangePassword?: boolean;
+  loginId?: string;
 };
 
 export type StudentCredentialItem = {
@@ -245,13 +247,14 @@ export async function generateTeacherCredentialsPdf(params: {
   const loginUrl = "https://eduledger.co.in/teacher/login";
 
   const columns = [
-    { key: "sl", label: "#", width: 22, align: "center" as const },
-    { key: "facultyId", label: "Faculty ID", width: 62, align: "left" as const },
-    { key: "name", label: "Teacher Name", width: 105, align: "left" as const },
-    { key: "department", label: "Dept / Subject", width: 85, align: "left" as const },
-    { key: "email", label: "Registered Gmail", width: 115, align: "left" as const },
-    { key: "phone", label: "Mobile", width: 66, align: "left" as const },
-    { key: "credential", label: "Access Credential", width: 68, align: "center" as const },
+    { key: "sl", label: "#", width: 20, align: "center" as const },
+    { key: "facultyId", label: "Faculty ID", width: 56, align: "left" as const },
+    { key: "name", label: "Teacher Name", width: 92, align: "left" as const },
+    { key: "department", label: "Dept / Subject", width: 75, align: "left" as const },
+    { key: "email", label: "Registered Email", width: 96, align: "left" as const },
+    { key: "phone", label: "Mobile", width: 60, align: "left" as const },
+    { key: "temporaryPassword", label: "Temporary Password", width: 80, align: "center" as const },
+    { key: "status", label: "Status", width: 44, align: "center" as const },
   ];
 
   const filters = params.departmentFilter ? [`Department: ${params.departmentFilter}`] : [];
@@ -323,9 +326,24 @@ export async function generateTeacherCredentialsPdf(params: {
         borderWidth: 0.3,
       });
 
-      const credText = teacher.temporaryPassword
-        ? teacher.temporaryPassword
-        : (teacher.status === "Active" ? "Active (Use PW)" : "Pending");
+      let passwordText = "Pending Setup";
+      let passwordColor = mutedText;
+      let passwordFont = font;
+      if (teacher.temporaryPassword) {
+        passwordText = teacher.temporaryPassword;
+        passwordColor = rgb(0.75, 0.1, 0.1);
+        passwordFont = bold;
+      } else if (teacher.mustChangePassword === false) {
+        passwordText = "Password Set";
+        passwordColor = accentGreen;
+        passwordFont = bold;
+      } else if (teacher.status === "Inactive") {
+        passwordText = "Inactive";
+        passwordColor = mutedText;
+      }
+
+      const statusText = teacher.status || "Active";
+      const statusColor = statusText === "Active" ? accentGreen : mutedText;
 
       const deptSubject = [teacher.department, teacher.subject].filter(Boolean).join(" / ");
 
@@ -350,13 +368,26 @@ export async function generateTeacherCredentialsPdf(params: {
 
       drawCell(
         page,
-        credText,
+        passwordText,
         curX,
         currentY - 15,
         columns[6].width,
         7,
+        passwordFont,
+        passwordColor,
+        "center"
+      );
+      curX += columns[6].width;
+
+      drawCell(
+        page,
+        statusText,
+        curX,
+        currentY - 15,
+        columns[7].width,
+        7,
         bold,
-        teacher.temporaryPassword ? accentGreen : brandIndigo,
+        statusColor,
         "center"
       );
 

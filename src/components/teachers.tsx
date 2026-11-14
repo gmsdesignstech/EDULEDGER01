@@ -428,7 +428,7 @@ function TeacherCredentialsModal({
               <span>Copy All</span>
             </button>
             <a
-              href={`/api/credentials/teachers/${credentials.teacherId}/pdf`}
+              href={credentials.temporaryPassword ? `/api/credentials/teachers/${credentials.teacherId}/pdf?temp=${encodeURIComponent(credentials.temporaryPassword)}` : `/api/credentials/teachers/${credentials.teacherId}/pdf`}
               download
               className="btn-secondary inline-flex items-center gap-1.5 text-xs font-bold"
             >

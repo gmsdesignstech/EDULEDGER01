@@ -19,8 +19,12 @@ import {
   paymentRequestExists,
   saveClass,
   saveTeacher,
+  formatTeacherLoginId,
+  upsertTeacherAccount,
   type StudentInput,
 } from "@/lib/db";
+import { generateSecureTemporaryPassword } from "@/lib/account-provisioning";
+import { hash } from "bcryptjs";
 import { currentUser } from "@/lib/session";
 import { explainCapacityError } from "@/lib/subscription-access";
 import { importDefinitions, normalizeImportRows, uniqueImportAdmission, type ImportRow } from "@/lib/import-schema";
@@ -124,9 +128,12 @@ async function importRecords(request: Request) {
   const required=requiredFor(type),available=new Set(rows.flatMap(row=>Object.keys(row)));
   const missingColumn=required.find(column=>!available.has(column));
   if(missingColumn){const message=`${missingColumn} column could not be mapped. Check the column mapping or download the current template.`;return NextResponse.json({success:false,message,error:`Detected supported columns: ${Object.keys(importDefinitions[type]||{}).join(", ")}.`,imported:0,skipped:rows.length,failed:rows.length,errors:[]},{status:400})}
-  const defaultAcademicYear=(await getInstitution(user.institutionId)).academicYear;
-  const studentSettings=type==="students"?await getCompleteSettings(user.institutionId):null;
-  const existingStudents=type==="students"?await studentImportKeys(user.institutionId):[];
+  const institution = await getInstitution(user.institutionId);
+  const defaultAcademicYear = institution.academicYear;
+  const institutionSettings = (type === "students" || type === "teachers") ? await getCompleteSettings(user.institutionId) : null;
+  const studentSettings = type === "students" ? institutionSettings : null;
+  const schoolCode = institutionSettings?.schoolCode || institution.name.replace(/[^A-Za-z0-9]/g, "").slice(0, 4).toUpperCase();
+  const existingStudents = type === "students" ? await studentImportKeys(user.institutionId) : [];
   const seenAdmissions=new Set(existingStudents.map(student=>student.admission.trim().toLowerCase()));
   const seenRollNumbers=new Set(existingStudents.map(student=>student.rollNumber.trim().toLowerCase()).filter(Boolean));
   console.info("[import]",{event:"start",requestId,institutionId:user.institutionId,userId:user.id,type,rows:rows.length,rowOffset});
@@ -228,12 +235,14 @@ async function importRecords(request: Request) {
   }
   for (const row of type==="students"?[]:valid) {
     try {
-      if (type === "teachers")
-        await saveTeacher(
+      if (type === "teachers") {
+        const canonicalLoginId = formatTeacherLoginId(schoolCode, s(row, "Employee ID"));
+        const teacher = await saveTeacher(
           user.institutionId,
           {
             name: s(row, "Teacher Name"),
             employeeId: s(row, "Employee ID"),
+            loginId: canonicalLoginId,
             email: s(row, "Email"),
             phone: s(row, "Phone"),
             department: s(row, "Department"),
@@ -245,6 +254,21 @@ async function importRecords(request: Request) {
           },
           user.id,
         );
+
+        const tempPassword = generateSecureTemporaryPassword();
+        const passwordHash = await hash(tempPassword, 10);
+
+        await upsertTeacherAccount(user.institutionId, {
+          name: s(row, "Teacher Name"),
+          email: s(row, "Email"),
+          passwordHash,
+          phone: s(row, "Phone"),
+          status: s(row, "Status") || "Active",
+          teacherId: teacher.id,
+          loginId: canonicalLoginId,
+          mustChangePassword: true,
+        });
+      }
       else if (type === "classes")
         await saveClass(
           user.institutionId,

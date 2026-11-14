@@ -1,7 +1,7 @@
 import "server-only";
 import { randomBytes } from "node:crypto";
 import { hash } from "bcryptjs";
-import { queryRows, queryRow, queryRun, getDb } from "./db";
+import { queryRows, queryRow, queryRun, getDb, formatTeacherLoginId } from "./db";
 import type { TeacherCredentialItem, StudentCredentialItem, SchoolCredentialMeta } from "./credential-pdf";
 
 export function generateSecureTemporaryPassword(): string {
@@ -131,6 +131,285 @@ export async function getMultiSchoolAccessOverview(): Promise<SchoolAccessOvervi
   };
 }
 
+export type TeacherAuditSummary = {
+  totalAudited: number;
+  provisioned: number;
+  repaired: number;
+  activeWithSetPassword: number;
+  credentials: Map<string, {
+    teacherId: string;
+    employeeId: string;
+    loginId: string;
+    name: string;
+    email: string;
+    phone: string;
+    temporaryPassword?: string;
+    mustChangePassword: boolean;
+    status: string;
+  }>;
+};
+
+/**
+ * Audits all teachers in an institution and repairs accounts with missing passwords or unlinked user records.
+ * Never overwrites passwords for active teachers who already configured their own password,
+ * unless explicitly requested via regenerateAll or regenerateTeacherId.
+ */
+export async function auditAndRepairTeacherCredentials(
+  institutionId: string,
+  options: {
+    regenerateAll?: boolean;
+    regenerateTeacherId?: string;
+    includePendingPasswords?: boolean;
+  } = {}
+): Promise<TeacherAuditSummary> {
+  const school = await queryRow<{ id: string; name: string }>(
+    `SELECT id, name FROM institutions WHERE id = ?`,
+    [institutionId]
+  );
+  const settings = await queryRow<{ school_code?: string }>(
+    `SELECT school_code FROM settings WHERE institution_id = ?`,
+    [institutionId]
+  );
+
+  const schoolName = school?.name || "School";
+  const schoolCode = settings?.school_code || schoolName.replace(/[^A-Za-z0-9]/g, "").slice(0, 4).toUpperCase();
+
+  const teachers = await queryRows<{
+    id: string;
+    name: string;
+    employee_id: string;
+    email: string;
+    phone: string;
+    department: string;
+    subject: string;
+    status: string;
+    login_id: string;
+  }>(
+    `SELECT id, name, employee_id, email, phone, department, subject, status, COALESCE(login_id, '') as login_id
+     FROM teachers
+     WHERE institution_id = ? AND status <> 'Deleted'
+     ORDER BY name ASC`,
+    [institutionId]
+  );
+
+  let provisioned = 0;
+  let repaired = 0;
+  let activeWithSetPassword = 0;
+
+  const credentials = new Map<string, {
+    teacherId: string;
+    employeeId: string;
+    loginId: string;
+    name: string;
+    email: string;
+    phone: string;
+    temporaryPassword?: string;
+    mustChangePassword: boolean;
+    status: string;
+  }>();
+
+  for (const teacher of teachers) {
+    const canonicalLoginId = teacher.login_id || formatTeacherLoginId(schoolCode, teacher.employee_id);
+    const cleanEmail = (teacher.email || "").trim().toLowerCase();
+    const rawDigits = (teacher.phone || "").replace(/[^0-9]/g, "");
+    const digits = rawDigits.length >= 10 ? rawDigits.slice(-10) : rawDigits;
+    const syntheticEmail = digits
+      ? `teacher_${digits}@${institutionId.toLowerCase()}.internal`
+      : `teacher_${teacher.id.slice(0, 8)}@${institutionId.toLowerCase()}.internal`;
+    const effectiveEmail = cleanEmail || syntheticEmail;
+
+    // Check existing user account by loginId, cleanEmail, syntheticEmail, or phone
+    let existingUser = await queryRow<{
+      id: string;
+      email: string;
+      password_hash: string | null;
+      role: string;
+      status: string;
+      login_id: string | null;
+      must_change_password: boolean | null;
+    }>(
+      `SELECT id, email, password_hash, role, status, login_id, must_change_password
+       FROM users
+       WHERE institution_id = ? AND role = 'TEACHER' AND (
+         (login_id IS NOT NULL AND LOWER(TRIM(login_id)) = LOWER(?))
+         OR (LOWER(TRIM(email)) = LOWER(?))
+         OR (email = ? OR email LIKE ?)
+       )
+       LIMIT 1`,
+      [institutionId, canonicalLoginId, effectiveEmail, syntheticEmail, `teacher_${digits}@%`]
+    );
+
+    // If still not found and teacher has cleanEmail, check global users by email
+    if (!existingUser && cleanEmail) {
+      existingUser = await queryRow<{
+        id: string;
+        email: string;
+        password_hash: string | null;
+        role: string;
+        status: string;
+        login_id: string | null;
+        must_change_password: boolean | null;
+      }>(
+        `SELECT id, email, password_hash, role, status, login_id, must_change_password
+         FROM users
+         WHERE LOWER(TRIM(email)) = LOWER(?)
+         LIMIT 1`,
+        [cleanEmail]
+      );
+    }
+
+    const teacherStatus = teacher.status === "Active" ? "Active" : "Inactive";
+    const shouldRegenerate = Boolean(
+      options.regenerateAll || (options.regenerateTeacherId && options.regenerateTeacherId === teacher.id)
+    );
+
+    if (!existingUser) {
+      // 1. Teacher account does NOT exist -> PROVISION NEW ACCOUNT
+      const tempPassword = generateSecureTemporaryPassword();
+      const passwordHash = await hash(tempPassword, 10);
+      const newUserId = crypto.randomUUID();
+
+      await queryRun(
+        `INSERT INTO users(id, email, name, password_hash, role, institution_id, status, login_id, must_change_password)
+         VALUES(?, ?, ?, ?, 'TEACHER', ?, ?, ?, TRUE)`,
+        [newUserId, effectiveEmail, teacher.name || "Faculty Member", passwordHash, institutionId, teacherStatus, canonicalLoginId]
+      );
+
+      if (!teacher.login_id) {
+        await queryRun(
+          `UPDATE teachers SET login_id = ? WHERE id = ? AND institution_id = ?`,
+          [canonicalLoginId, teacher.id, institutionId]
+        );
+      }
+
+      provisioned++;
+      credentials.set(teacher.id, {
+        teacherId: teacher.id,
+        employeeId: teacher.employee_id,
+        loginId: canonicalLoginId,
+        name: teacher.name,
+        email: cleanEmail,
+        phone: teacher.phone,
+        temporaryPassword: tempPassword,
+        mustChangePassword: true,
+        status: teacherStatus,
+      });
+    } else {
+      // 2. Teacher account exists -> AUDIT PASSWORD AND REPAIR IF MISSING OR REGENERATING
+      const missingPassword = !existingUser.password_hash || existingUser.password_hash.trim().length === 0;
+      const userMustChange = existingUser.must_change_password ?? false;
+
+      // Update login_id on user and teacher if missing
+      if (!existingUser.login_id) {
+        await queryRun(
+          `UPDATE users SET login_id = ? WHERE id = ?`,
+          [canonicalLoginId, existingUser.id]
+        );
+      }
+      if (!teacher.login_id) {
+        await queryRun(
+          `UPDATE teachers SET login_id = ? WHERE id = ? AND institution_id = ?`,
+          [canonicalLoginId, teacher.id, institutionId]
+        );
+      }
+
+      if (missingPassword || shouldRegenerate) {
+        // Generate new temporary password
+        const tempPassword = generateSecureTemporaryPassword();
+        const passwordHash = await hash(tempPassword, 10);
+
+        await queryRun(
+          `UPDATE users
+           SET password_hash = ?,
+               must_change_password = TRUE,
+               status = ?,
+               login_id = COALESCE(login_id, ?),
+               institution_id = ?
+           WHERE id = ?`,
+          [passwordHash, teacherStatus, canonicalLoginId, institutionId, existingUser.id]
+        );
+
+        repaired++;
+        credentials.set(teacher.id, {
+          teacherId: teacher.id,
+          employeeId: teacher.employee_id,
+          loginId: canonicalLoginId,
+          name: teacher.name,
+          email: cleanEmail,
+          phone: teacher.phone,
+          temporaryPassword: tempPassword,
+          mustChangePassword: true,
+          status: teacherStatus,
+        });
+      } else if (userMustChange && options.includePendingPasswords !== false) {
+        // Teacher has not yet completed first login and changed their password.
+        // Ensure a valid temporary password is synchronized and available.
+        const tempPassword = generateSecureTemporaryPassword();
+        const passwordHash = await hash(tempPassword, 10);
+
+        await queryRun(
+          `UPDATE users
+           SET password_hash = ?,
+               must_change_password = TRUE,
+               status = ?,
+               login_id = COALESCE(login_id, ?),
+               institution_id = ?
+           WHERE id = ?`,
+          [passwordHash, teacherStatus, canonicalLoginId, institutionId, existingUser.id]
+        );
+
+        repaired++;
+        credentials.set(teacher.id, {
+          teacherId: teacher.id,
+          employeeId: teacher.employee_id,
+          loginId: canonicalLoginId,
+          name: teacher.name,
+          email: cleanEmail,
+          phone: teacher.phone,
+          temporaryPassword: tempPassword,
+          mustChangePassword: true,
+          status: teacherStatus,
+        });
+      } else if (userMustChange) {
+        // Pending first login, but don't regenerate password
+        credentials.set(teacher.id, {
+          teacherId: teacher.id,
+          employeeId: teacher.employee_id,
+          loginId: canonicalLoginId,
+          name: teacher.name,
+          email: cleanEmail,
+          phone: teacher.phone,
+          temporaryPassword: undefined,
+          mustChangePassword: true,
+          status: teacherStatus,
+        });
+      } else {
+        // Teacher already set their permanent password! DO NOT OVERWRITE.
+        activeWithSetPassword++;
+        credentials.set(teacher.id, {
+          teacherId: teacher.id,
+          employeeId: teacher.employee_id,
+          loginId: canonicalLoginId,
+          name: teacher.name,
+          email: cleanEmail,
+          phone: teacher.phone,
+          temporaryPassword: undefined,
+          mustChangePassword: false,
+          status: teacherStatus,
+        });
+      }
+    }
+  }
+
+  return {
+    totalAudited: teachers.length,
+    provisioned,
+    repaired,
+    activeWithSetPassword,
+    credentials,
+  };
+}
+
 /**
  * Automatically reconciles and provisions missing login accounts for teachers & parents of a school.
  * Never overwrites existing user accounts, passwords or hashes.
@@ -160,57 +439,19 @@ export async function provisionSchoolAccounts(
 
   // --- A. PROVISION TEACHERS ---
   if (target === "teachers" || target === "all") {
-    const teachers = await queryRows<{
-      id: string;
-      name: string;
-      email: string;
-      phone: string;
-      employee_id: string;
-      institution_id: string;
-    }>(
-      `SELECT t.id, t.name, t.email, t.phone, t.employee_id, t.institution_id
-       FROM teachers t
-       WHERE t.institution_id = ?`,
-      [institutionId]
-    );
+    const audit = await auditAndRepairTeacherCredentials(institutionId, { includePendingPasswords: true });
+    provisionedTeachers = audit.provisioned + audit.repaired;
+    skippedTeachers = audit.activeWithSetPassword;
 
-    for (const teacher of teachers) {
-      const email = String(teacher.email || "").trim().toLowerCase();
-      if (!email) {
-        skippedTeachers++;
-        continue;
+    for (const [, cred] of audit.credentials.entries()) {
+      if (cred.temporaryPassword) {
+        issuedTeacherCredentials.push({
+          teacherId: cred.teacherId,
+          name: cred.name,
+          email: cred.email || cred.phone,
+          temporaryPassword: cred.temporaryPassword,
+        });
       }
-
-      // Check if user account already exists
-      const existingUser = await queryRow<{ id: string; email: string; role: string }>(
-        `SELECT id, email, role FROM users WHERE LOWER(email) = ?`,
-        [email]
-      );
-
-      if (existingUser) {
-        skippedTeachers++;
-        continue;
-      }
-
-      // Create new user account with temporary password
-      const tempPassword = generateSecureTemporaryPassword();
-      const passwordHash = await hash(tempPassword, 10);
-      const newUserId = crypto.randomUUID();
-
-      await queryRun(
-        `INSERT INTO users(id, email, name, password_hash, role, institution_id, status)
-         VALUES(?, ?, ?, ?, 'TEACHER', ?, 'Active')
-         ON CONFLICT (email) DO NOTHING`,
-        [newUserId, email, teacher.name || "Faculty Member", passwordHash, institutionId]
-      );
-
-      provisionedTeachers++;
-      issuedTeacherCredentials.push({
-        teacherId: teacher.id,
-        name: teacher.name,
-        email,
-        temporaryPassword: tempPassword,
-      });
     }
   }
 
@@ -334,16 +575,27 @@ export async function provisionSchoolAccounts(
 }
 
 /**
- * Fetch teachers formatted for PDF generation
+ * Fetch teachers formatted for PDF generation with audited credentials
  */
 export async function getTeacherPdfData(
   institutionId: string,
-  departmentFilter?: string
+  departmentFilter?: string,
+  options?: { regenerate?: "all" | "missing" }
 ): Promise<{ school: SchoolCredentialMeta; teachers: TeacherCredentialItem[] }> {
-  const school = await queryRow<{ id: string; name: string }>(
-    `SELECT id, name FROM institutions WHERE id = ?`,
-    [institutionId]
-  );
+  const [school, settings, audit] = await Promise.all([
+    queryRow<{ id: string; name: string }>(
+      `SELECT id, name FROM institutions WHERE id = ?`,
+      [institutionId]
+    ),
+    queryRow<{ academic_year?: string }>(
+      `SELECT academic_year FROM settings WHERE institution_id = ?`,
+      [institutionId]
+    ),
+    auditAndRepairTeacherCredentials(institutionId, {
+      regenerateAll: options?.regenerate === "all",
+      includePendingPasswords: true,
+    }),
+  ]);
 
   let query = `
     SELECT
@@ -354,10 +606,10 @@ export async function getTeacherPdfData(
       t.subject,
       t.email,
       t.phone,
-      COALESCE(u.status, 'Pending') as status
+      t.status,
+      COALESCE(t.login_id, '') as "loginId"
     FROM teachers t
-    LEFT JOIN users u ON LOWER(u.email) = LOWER(t.email) AND u.institution_id = t.institution_id
-    WHERE t.institution_id = ?
+    WHERE t.institution_id = ? AND t.status <> 'Deleted'
   `;
   const params: unknown[] = [institutionId];
 
@@ -369,6 +621,7 @@ export async function getTeacherPdfData(
   query += ` ORDER BY t.name ASC`;
 
   const rows = await queryRows<{
+    id: string;
     facultyId: string;
     name: string;
     department: string;
@@ -376,22 +629,30 @@ export async function getTeacherPdfData(
     email: string;
     phone: string;
     status: string;
+    loginId: string;
   }>(query, params);
 
   return {
     school: {
       id: school?.id || institutionId,
       name: school?.name || "School",
+      academicYear: settings?.academic_year || "2025-2026",
     },
-    teachers: rows.map((r) => ({
-      facultyId: r.facultyId || "—",
-      name: r.name,
-      department: r.department || "",
-      subject: r.subject || "",
-      email: r.email || "",
-      phone: r.phone || "",
-      status: r.status || "Pending",
-    })),
+    teachers: rows.map((r) => {
+      const cred = audit.credentials.get(r.id);
+      return {
+        facultyId: r.facultyId || "—",
+        name: r.name,
+        department: r.department || "",
+        subject: r.subject || "",
+        email: r.email || "",
+        phone: r.phone || "",
+        status: r.status || "Active",
+        temporaryPassword: cred?.temporaryPassword,
+        mustChangePassword: cred?.mustChangePassword,
+        loginId: cred?.loginId || r.loginId || r.facultyId,
+      };
+    }),
   };
 }
 

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { currentUser } from "@/lib/session";
 import { getInstitution, listTeachers } from "@/lib/db";
+import { auditAndRepairTeacherCredentials } from "@/lib/account-provisioning";
 import { generateSingleTeacherCredentialPdf } from "@/lib/credential-pdf";
 import { logServerError } from "@/lib/server-errors";
 
@@ -34,6 +35,22 @@ export async function GET(
       return NextResponse.json({ error: "Teacher record not found." }, { status: 404 });
     }
 
+    const { searchParams } = new URL(request.url);
+    const tempParam = searchParams.get("temp") || undefined;
+    const regenerateParam = searchParams.get("regenerate") === "true";
+
+    let temporaryPassword = tempParam;
+    if (!temporaryPassword) {
+      const audit = await auditAndRepairTeacherCredentials(institutionId, {
+        regenerateTeacherId: regenerateParam ? teacher.id : undefined,
+        includePendingPasswords: true,
+      });
+      const cred = audit.credentials.get(teacher.id);
+      if (cred?.temporaryPassword) {
+        temporaryPassword = cred.temporaryPassword;
+      }
+    }
+
     const host = request.headers.get("x-forwarded-host") || request.headers.get("host") || "eduledger.co.in";
     const proto = request.headers.get("x-forwarded-proto") || "https";
     const origin = `${proto}://${host}`;
@@ -55,6 +72,7 @@ export async function GET(
         email: teacher.email,
         phone: teacher.phone,
         status: teacher.status,
+        temporaryPassword,
       },
       loginUrl,
     });

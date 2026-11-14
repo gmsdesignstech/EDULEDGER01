@@ -15,13 +15,15 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const schoolId = searchParams.get("schoolId");
   const department = searchParams.get("department") || undefined;
+  const regenerateParam = searchParams.get("regenerate");
+  const regenerate = regenerateParam === "all" ? "all" : regenerateParam === "missing" ? "missing" : undefined;
 
   if (!schoolId) {
     return NextResponse.json({ error: "schoolId parameter is required" }, { status: 400 });
   }
 
   try {
-    const { school, teachers } = await getTeacherPdfData(schoolId, department);
+    const { school, teachers } = await getTeacherPdfData(schoolId, department, { regenerate });
     const pdfBytes = await generateTeacherCredentialsPdf({
       school,
       teachers,

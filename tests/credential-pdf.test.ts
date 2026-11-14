@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { PDFDocument } from "pdf-lib";
 import {
   generateTeacherCredentialsPdf,
   generateStudentCredentialsPdf,
@@ -132,6 +133,89 @@ describe("EduLedger Credential PDF Generation Subsystem", () => {
     const pdfBytes = await generateStudentCredentialsPdf({
       school: sampleSchool,
       students: largeStudentList,
+    });
+
+    expect(pdfBytes).toBeInstanceOf(Uint8Array);
+    expect(pdfBytes.length).toBeGreaterThan(5000);
+  });
+
+  it("generates 8-column official Teacher Credentials PDF with temporary passwords and no placeholder text", async () => {
+    const sampleSchool = {
+      id: "inst-101",
+      name: "Dar Al Arqam Public School",
+      academicYear: "2025-2026",
+    };
+
+    const teachers = [
+      {
+        facultyId: "EMP-001",
+        name: "Rubina Bano",
+        department: "Science",
+        subject: "Physics",
+        email: "rubina@daps.edu",
+        phone: "9876543210",
+        status: "Active",
+        temporaryPassword: "Edu#9xK2!m8A",
+        mustChangePassword: true,
+      },
+      {
+        facultyId: "EMP-002",
+        name: "Zeeshan Khan",
+        department: "Mathematics",
+        subject: "Calculus",
+        email: "zeeshan@daps.edu",
+        phone: "9123456789",
+        status: "Active",
+        mustChangePassword: false, // Already set their own password
+      },
+      {
+        facultyId: "EMP-003",
+        name: "Tariq Mahmood",
+        department: "Humanities",
+        subject: "History",
+        email: "",
+        phone: "9988776655",
+        status: "Inactive",
+      },
+    ];
+
+    const pdfBytes = await generateTeacherCredentialsPdf({
+      school: sampleSchool,
+      teachers,
+    });
+
+    expect(pdfBytes).toBeInstanceOf(Uint8Array);
+    expect(pdfBytes.length).toBeGreaterThan(1500);
+
+    const loadedDoc = await PDFDocument.load(pdfBytes);
+    expect(loadedDoc.getPageCount()).toBe(1);
+
+    const header = Buffer.from(pdfBytes.slice(0, 5)).toString("ascii");
+    expect(header).toBe("%PDF-");
+  });
+
+  it("generates multi-page official Teacher Credentials PDF for large faculty roster", async () => {
+    const sampleSchool = {
+      id: "inst-large-faculty",
+      name: "Heritage International Academy",
+      academicYear: "2025-2026",
+    };
+
+    const largeTeacherList = Array.from({ length: 70 }, (_, i) => ({
+      facultyId: `TCH-${String(i + 1).padStart(3, "0")}`,
+      name: `Faculty Member ${i + 1}`,
+      department: i % 3 === 0 ? "Science" : i % 3 === 1 ? "Mathematics" : "Languages",
+      subject: `Subject ${i + 1}`,
+      email: `faculty${i + 1}@heritage.edu`,
+      phone: `98000000${String(i).padStart(2, "0")}`,
+      status: i === 65 ? "Inactive" : "Active",
+      temporaryPassword: i % 2 === 0 ? `Edu*${i}aB!990` : undefined,
+      mustChangePassword: i % 2 === 0,
+    }));
+
+    const pdfBytes = await generateTeacherCredentialsPdf({
+      school: sampleSchool,
+      teachers: largeTeacherList,
     });
 
     expect(pdfBytes).toBeInstanceOf(Uint8Array);
