@@ -83,6 +83,8 @@ export interface WhatsAppStudentListItem {
   gender: string;
   parent: string;
   parentPhone: string;
+  parentWhatsapp?: string;
+  whatsappConsentStatus?: string;
   hasValidWhatsApp: boolean;
   normalizedPhone: string;
   formattedPhone: string;

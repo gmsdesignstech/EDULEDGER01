@@ -35,7 +35,7 @@ export default defineConfig({
       "tests/whatsapp-messaging.test.ts",
       "tests/whatsapp-pricing.test.ts",
       "tests/whatsapp-rate-limit.test.ts",
-      "tests/whatsapp-n8n-integration.test.ts",
+      "tests/whatsapp-direct-cloud-integration.test.ts",
       "tests/whatsapp-e2e-simulation.test.ts",
       "tests/whatsapp-dispatch-safety.test.ts",
       "tests/whatsapp-worker.test.ts",

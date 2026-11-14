@@ -42,6 +42,8 @@ import {
   Server,
   ArrowRight,
   Sparkles,
+  Settings,
+  RotateCw,
 } from "lucide-react";
 import {
   WHATSAPP_CATEGORIES,
@@ -55,7 +57,6 @@ import type {
 } from "@/lib/whatsapp-click-to-chat-db";
 import { WhatsAppShareModal } from "./whatsapp-share-modal";
 import { readApiJson } from "@/lib/api-response";
-import { N8N_WORKFLOWS_CATALOG, type N8nWorkflowMeta } from "@/lib/whatsapp-n8n-definitions";
 import { SYSTEM_TEMPLATES } from "@/lib/whatsapp-templates";
 
 interface WhatsAppCommunicationHubProps {
@@ -68,7 +69,7 @@ export function WhatsAppCommunicationHub({
   isTeacherView = false,
 }: WhatsAppCommunicationHubProps) {
   const [activeTab, setActiveTab] = useState<
-    "students" | "contacts" | "workflows" | "history" | "templates"
+    "students" | "contacts" | "history" | "templates" | "configuration"
   >("students");
 
   // Integration & Server status state
@@ -101,6 +102,7 @@ export function WhatsAppCommunicationHub({
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyStatusFilter, setHistoryStatusFilter] = useState("ALL");
   const [historySearch, setHistorySearch] = useState("");
+  const [retryingId, setRetryingId] = useState<string | null>(null);
 
   // Templates state
   const [templates, setTemplates] = useState<
@@ -122,11 +124,6 @@ export function WhatsAppCommunicationHub({
     content: string;
   } | null>(null);
   const [templateSaving, setTemplateSaving] = useState(false);
-
-  // Workflow JSON Viewer Modal state
-  const [viewingWorkflow, setViewingWorkflow] = useState<N8nWorkflowMeta | null>(null);
-  const [workflowJsonString, setWorkflowJsonString] = useState("");
-  const [copiedWorkflow, setCopiedWorkflow] = useState(false);
 
   // Quick Share Modal state
   const [modalStudentId, setModalStudentId] = useState<string | null>(null);
@@ -183,52 +180,50 @@ export function WhatsAppCommunicationHub({
     } finally {
       setStudentsLoading(false);
     }
-  }, [page, classFilter, sectionFilter, hasWhatsAppFilter, search]);
+  }, [page, classFilter, sectionFilter, search, hasWhatsAppFilter]);
 
   // 3. Fetch Parent Contacts & Consent
   const loadContacts = useCallback(async () => {
     setContactsLoading(true);
     try {
-      const params = new URLSearchParams();
-      if (contactClassFilter !== "ALL") params.set("class", contactClassFilter);
-      if (contactConsentFilter !== "ALL") params.set("consent", contactConsentFilter);
+      const params = new URLSearchParams({
+        limit: "100",
+        consent: contactConsentFilter,
+      });
+      if (contactClassFilter !== "ALL") params.set("className", contactClassFilter);
       if (contactSearch.trim()) params.set("search", contactSearch.trim());
 
-      const res = await fetch(`/api/whatsapp/contacts?${params.toString()}`, {
-        cache: "no-store",
-      });
+      const res = await fetch(`/api/whatsapp/contacts?${params.toString()}`, { cache: "no-store" });
       if (res.ok) {
         const data = await readApiJson(res);
         setContacts(data.contacts || []);
       }
     } catch (err) {
-      console.error("Error loading parent contacts:", err);
+      console.error("Error loading contacts:", err);
     } finally {
       setContactsLoading(false);
     }
   }, [contactClassFilter, contactConsentFilter, contactSearch]);
 
-  // 4. Fetch Message History (Live status tracking)
+  // 4. Fetch Communication History (from DB)
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
     try {
       const params = new URLSearchParams({
-        limit: "50",
         page: "1",
+        limit: "50",
+        status: historyStatusFilter,
       });
-      if (historyStatusFilter !== "ALL") params.set("status", historyStatusFilter);
       if (historySearch.trim()) params.set("search", historySearch.trim());
 
-      const res = await fetch(`/api/whatsapp/history?${params.toString()}`, {
-        cache: "no-store",
-      });
+      const res = await fetch(`/api/whatsapp/history?${params.toString()}`, { cache: "no-store" });
       if (res.ok) {
         const data = await readApiJson(res);
-        setHistory(data.items || []);
+        setHistory(data.messages || []);
         setTotalHistory(data.pagination?.total || 0);
       }
     } catch (err) {
-      console.error("Error loading message history:", err);
+      console.error("Error loading history:", err);
     } finally {
       setHistoryLoading(false);
     }
@@ -250,6 +245,30 @@ export function WhatsAppCommunicationHub({
     }
   }, []);
 
+  // Retry a failed message directly via Cloud API
+  const handleRetryMessage = async (messageId: string) => {
+    setRetryingId(messageId);
+    try {
+      const res = await fetch("/api/whatsapp/retry", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: messageId }),
+      });
+      const data = await readApiJson(res);
+      if (res.ok) {
+        showToast("Message retry initiated successfully.");
+        loadHistory();
+        loadStatus();
+      } else {
+        showToast(`Retry failed: ${data.error || "Unknown error"}`);
+      }
+    } catch (err) {
+      showToast("Network error while retrying message.");
+    } finally {
+      setRetryingId(null);
+    }
+  };
+
   useEffect(() => {
     loadStatus();
     loadStudents();
@@ -264,84 +283,57 @@ export function WhatsAppCommunicationHub({
   // Distinct class names for filters
   const classOptions = useMemo(() => {
     const set = new Set<string>();
-    for (const s of students) {
+    students.forEach((s) => {
       if (s.className) set.add(s.className);
-    }
-    for (const c of contacts) {
-      if (c.className) set.add(c.className);
-    }
+    });
     return Array.from(set).sort();
-  }, [students, contacts]);
+  }, [students]);
 
-  // Open share modal helper
-  const handleOpenShare = (student: { id: string; name: string }, cat: WhatsAppCategory = "STUDENT_INFO") => {
-    setModalStudentId(student.id);
-    setModalStudentName(student.name);
-    setModalCategory(cat);
+  const openShareModal = (studentId: string, studentName: string, category: WhatsAppCategory) => {
+    setModalStudentId(studentId);
+    setModalStudentName(studentName);
+    setModalCategory(category);
     setIsModalOpen(true);
   };
 
-  // Save Contact & Consent Changes
+  // Save Contact & Consent
   const handleSaveContact = async () => {
     if (!editingContact) return;
     setSavingContact(true);
     try {
       const res = await fetch("/api/whatsapp/contacts", {
-        method: "PUT",
+        method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           studentId: editingContact.studentId,
-          parentPhone: editingContact.rawPhone,
-          consentGranted: editingContact.hasConsent,
-          attendance: editingContact.categories?.attendance ?? true,
-          academics: editingContact.categories?.academics ?? true,
-          fees: editingContact.categories?.fees ?? true,
-          notices: editingContact.categories?.notices ?? true,
-          general: editingContact.categories?.general ?? true,
+          parentPhone: editingContact.parentPhone,
+          parentWhatsapp: editingContact.parentWhatsapp,
+          consentStatus: editingContact.consentStatus,
+          notes: editingContact.notes || "Updated via Communication Hub",
         }),
       });
-      if (!res.ok) {
+      if (res.ok) {
+        showToast("Contact and consent updated successfully.");
+        setEditingContact(null);
+        loadContacts();
+        loadStatus();
+      } else {
         const err = await readApiJson(res);
-        throw new Error(err.error || "Failed to update contact.");
+        showToast(`Failed to update: ${err.error || "Unknown error"}`);
       }
-      showToast("Parent WhatsApp contact & consent updated!");
-      setEditingContact(null);
-      loadContacts();
-      loadStatus();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed to update contact.");
+      showToast("Network error updating contact.");
     } finally {
       setSavingContact(false);
     }
   };
 
-  // Opt-out a parent
-  const handleOptOut = async (studentId: string, studentName: string) => {
-    if (!confirm(`Are you sure you want to opt-out the parent of ${studentName}? Automated and manual WhatsApp messages will be blocked.`)) {
+  // Save Custom Template
+  const handleSaveTemplate = async () => {
+    if (!editingTemplate || !editingTemplate.title.trim() || !editingTemplate.content.trim()) {
+      showToast("Please provide both title and template content.");
       return;
     }
-    try {
-      const res = await fetch("/api/whatsapp/opt-out", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ studentId, reason: "MANUAL_STAFF_RECORDED" }),
-      });
-      if (res.ok) {
-        showToast(`Parent of ${studentName} has been opted out.`);
-        loadContacts();
-        loadStatus();
-      } else {
-        const err = await readApiJson(res);
-        alert(err.error || "Failed to process opt-out.");
-      }
-    } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed to opt-out.");
-    }
-  };
-
-  // Save Template handler
-  const handleSaveTemplate = async () => {
-    if (!editingTemplate) return;
     setTemplateSaving(true);
     try {
       const res = await fetch("/api/whatsapp/click-to-chat/templates", {
@@ -349,140 +341,55 @@ export function WhatsAppCommunicationHub({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(editingTemplate),
       });
-      if (!res.ok) {
+      if (res.ok) {
+        showToast("Custom template saved.");
+        setEditingTemplate(null);
+        loadTemplates();
+      } else {
         const err = await readApiJson(res);
-        throw new Error(err.error || "Failed to save template.");
+        showToast(`Error: ${err.error || "Could not save template"}`);
       }
-      showToast("Template saved successfully!");
-      setEditingTemplate(null);
-      loadTemplates();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed to save template.");
+      showToast("Network error saving template.");
     } finally {
       setTemplateSaving(false);
     }
   };
 
-  // Open Workflow JSON viewer modal
-  const handleOpenWorkflowModal = (wf: N8nWorkflowMeta) => {
-    setViewingWorkflow(wf);
-    setCopiedWorkflow(false);
-    // Build standard importable n8n workflow JSON structure
-    const sampleJson = {
-      name: `${wf.code} – EduLedger ${wf.name}`,
-      description: wf.summary,
-      nodes: [
-        {
-          parameters: {
-            httpMethod: "POST",
-            path: `${wf.trigger.replace(".", "-")}-webhook`,
-            options: {},
-          },
-          name: `Webhook – ${wf.name}`,
-          type: "n8n-nodes-base.webhook",
-          typeVersion: 1,
-          position: [180, 300],
-        },
-        {
-          parameters: {
-            conditions: {
-              boolean: [
-                { value1: "={{ $json.parent.hasConsent }}", value2: true },
-                { value1: "={{ $json.parent.optedOut }}", value2: false },
-              ],
-              string: [{ value1: "={{ $json.eventType }}", value2: wf.trigger }],
-            },
-          },
-          name: "Verify Consent & Event",
-          type: "n8n-nodes-base.if",
-          typeVersion: 1,
-          position: [420, 300],
-        },
-        {
-          parameters: {
-            method: "POST",
-            url: "https://graph.facebook.com/v19.0/{{WHATSAPP_PHONE_NUMBER_ID}}/messages",
-            sendHeaders: true,
-            headerParameters: {
-              parameters: [
-                { name: "Authorization", value: "Bearer {{WHATSAPP_ACCESS_TOKEN}}" },
-                { name: "Content-Type", value: "application/json" },
-              ],
-            },
-            sendBody: true,
-            specifyBody: "json",
-            jsonBody: "={\n  \"messaging_product\": \"whatsapp\",\n  \"recipient_type\": \"individual\",\n  \"to\": \"{{ $json.parent.phone.replace(/\\D/g, '') }}\",\n  \"type\": \"text\",\n  \"text\": { \"body\": {{ JSON.stringify($json.template.renderedMessage) }} }\n}",
-          },
-          name: "Send WhatsApp via Cloud API",
-          type: "n8n-nodes-base.httpRequest",
-          typeVersion: 4.1,
-          position: [680, 240],
-        },
-        {
-          parameters: {
-            method: "POST",
-            url: "{{EDULEDGER_WEBHOOK_URL}}/api/whatsapp/webhook",
-            sendHeaders: true,
-            headerParameters: {
-              parameters: [
-                { name: "Content-Type", value: "application/json" },
-                { name: "X-EduLedger-Signature", value: "{{EDULEDGER_WEBHOOK_SECRET}}" },
-              ],
-            },
-            sendBody: true,
-            specifyBody: "json",
-            jsonBody: "={\n  \"providerMessageId\": \"{{ $json.messages ? $json.messages[0].id : '' }}\",\n  \"status\": \"sent\",\n  \"timestamp\": \"{{ new Date().toISOString() }}\",\n  \"eventType\": \"${wf.trigger}\"\n}",
-          },
-          name: "Status Callback to EduLedger",
-          type: "n8n-nodes-base.httpRequest",
-          typeVersion: 4.1,
-          position: [920, 240],
-        },
-      ],
-      connections: {
-        [`Webhook – ${wf.name}`]: { main: [[{ node: "Verify Consent & Event", type: "main", index: 0 }]] },
-        "Verify Consent & Event": { main: [[{ node: "Send WhatsApp via Cloud API", type: "main", index: 0 }]] },
-        "Send WhatsApp via Cloud API": { main: [[{ node: "Status Callback to EduLedger", type: "main", index: 0 }]] },
-      },
-    };
-    setWorkflowJsonString(JSON.stringify(sampleJson, null, 2));
-  };
-
-  const copyWorkflowJson = () => {
-    navigator.clipboard.writeText(workflowJsonString);
-    setCopiedWorkflow(true);
-    setTimeout(() => setCopiedWorkflow(false), 3000);
-  };
-
-  const metrics = integrationStatus?.metrics || {};
   const env = integrationStatus?.environment || {};
-  const isN8nConfigured = env.n8nConfigured;
-  const isWhatsAppConfigured = env.whatsappConfigured;
+  const metrics = integrationStatus?.metrics || {};
+  const isDirectCloudConfigured = Boolean(env.configured && env.whatsappConfigured);
+  const isDispatchReady = Boolean(env.ready);
 
   return (
     <div className="space-y-6">
       {/* Toast Notification */}
       {toastMessage && (
-        <div className="fixed bottom-6 right-6 z-[90] flex items-center gap-2 rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white shadow-xl animate-in fade-in slide-in-from-bottom-3">
-          <Check className="size-4" />
+        <div className="fixed bottom-6 right-6 z-[100] flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-3 text-xs font-semibold text-white shadow-2xl transition animate-in fade-in slide-in-from-bottom-4">
+          <CheckCircle2 className="size-4 text-emerald-400 shrink-0" />
           <span>{toastMessage}</span>
+          <button onClick={() => setToastMessage(null)} className="ml-2 text-slate-400 hover:text-white">
+            <X className="size-3.5" />
+          </button>
         </div>
       )}
 
-      {/* Hero Header */}
-      <div className="relative overflow-hidden rounded-3xl border border-emerald-200/60 bg-gradient-to-br from-emerald-600 via-teal-700 to-slate-900 p-6 text-white shadow-xl dark:border-emerald-950 sm:p-8">
-        <div className="relative z-10 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      {/* Top Hero Banner */}
+      <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-emerald-800 via-teal-900 to-slate-950 p-6 text-white shadow-xl sm:p-8">
+        <div className="absolute right-0 top-0 -mr-16 -mt-16 size-80 rounded-full bg-emerald-500/10 blur-3xl" />
+        <div className="absolute left-1/3 bottom-0 size-60 rounded-full bg-teal-500/10 blur-3xl" />
+
+        <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="max-w-2xl">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1 text-xs font-bold backdrop-blur-md">
-                <span className="size-2 rounded-full bg-emerald-300 animate-pulse" />
-                n8n + WhatsApp Cloud API Integration
+              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/20 px-3 py-1 text-xs font-bold text-emerald-300 border border-emerald-400/30">
+                <MessageCircle className="size-3.5" /> Direct WhatsApp Cloud API
               </span>
-              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/30 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-100">
-                <ShieldCheck className="size-3" /> E.164 Validated
+              <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-100">
+                <ShieldCheck className="size-3" /> Meta Cloud API
               </span>
-              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/30 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-100">
-                <Zap className="size-3" /> Zero Paid Middleware
+              <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-100">
+                <Zap className="size-3" /> Zero Intermediaries
               </span>
             </div>
 
@@ -490,7 +397,7 @@ export function WhatsAppCommunicationHub({
               WhatsApp Parent Communication System
             </h1>
             <p className="mt-1.5 text-sm text-emerald-100/90 leading-relaxed">
-              Automate student notifications—absence alerts, fee reminders, payment receipts, exam marks, homework & announcements—directly to parents via official WhatsApp Cloud API and n8n workflows with full consent & multi-school data isolation.
+              Send instant, authorized student communications—absence alerts, fee reminders, payment receipts, exam marks, homework & announcements—directly to verified parent WhatsApp numbers with tenant isolation and consent management.
             </p>
           </div>
 
@@ -514,25 +421,41 @@ export function WhatsAppCommunicationHub({
         {/* Readiness Badges */}
         <div className="mt-6 grid grid-cols-2 gap-3 pt-5 border-t border-white/15 sm:grid-cols-4">
           <div className="flex items-center gap-2.5 rounded-xl bg-white/10 p-3 backdrop-blur-md">
-            <div className={`grid size-7 place-items-center rounded-lg ${isN8nConfigured ? "bg-emerald-500 text-white" : "bg-amber-400 text-slate-900"}`}>
+            <div
+              className={`grid size-7 place-items-center rounded-lg ${
+                isDirectCloudConfigured ? "bg-emerald-500 text-white" : "bg-amber-400 text-slate-900"
+              }`}
+            >
               <Server className="size-4" />
             </div>
             <div>
-              <div className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-200">n8n Engine</div>
+              <div className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-200">
+                Provider Architecture
+              </div>
               <div className="text-xs font-bold text-white">
-                {isN8nConfigured ? "Webhook Configured" : "Standby / Direct"}
+                {isDirectCloudConfigured ? "Direct Cloud API" : "Pending Setup"}
               </div>
             </div>
           </div>
 
           <div className="flex items-center gap-2.5 rounded-xl bg-white/10 p-3 backdrop-blur-md">
-            <div className={`grid size-7 place-items-center rounded-lg ${env.state === "Configured and Enabled" ? "bg-emerald-500 text-white" : env.state === "Configured but Disabled" ? "bg-amber-400 text-slate-900" : "bg-sky-400 text-slate-900"}`}>
+            <div
+              className={`grid size-7 place-items-center rounded-lg ${
+                isDispatchReady
+                  ? "bg-emerald-500 text-white"
+                  : isDirectCloudConfigured
+                  ? "bg-amber-400 text-slate-900"
+                  : "bg-sky-400 text-slate-900"
+              }`}
+            >
               <Zap className="size-4" />
             </div>
             <div>
-              <div className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-200">System Lifecycle</div>
+              <div className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-200">
+                Dispatch Status
+              </div>
               <div className="text-xs font-bold text-white">
-                {env.state || (isWhatsAppConfigured ? "Cloud API Configured" : "Click-to-Chat Active")}
+                {env.state || (isDirectCloudConfigured ? "Configured" : "Not Configured")}
               </div>
             </div>
           </div>
@@ -542,7 +465,9 @@ export function WhatsAppCommunicationHub({
               <UserCheck className="size-4" />
             </div>
             <div>
-              <div className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-200">Active Consents</div>
+              <div className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-200">
+                Active Consents
+              </div>
               <div className="text-xs font-bold text-white">
                 {metrics.consentsGranted ?? 0} Granted
               </div>
@@ -554,51 +479,28 @@ export function WhatsAppCommunicationHub({
               <CheckCircle2 className="size-4" />
             </div>
             <div>
-              <div className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-200">Delivered Msgs</div>
+              <div className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-200">
+                Delivered Messages
+              </div>
               <div className="text-xs font-bold text-white">
-                {metrics.messagesDelivered ?? 0} Messages
+                {metrics.messagesDelivered ?? 0} Delivered
               </div>
             </div>
           </div>
         </div>
       </div>
 
-      {/* KPI Cards */}
+      {/* KPI Overview Cards (Strict User Requirements) */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
         <div className="dashboard-card p-4">
           <div className="flex items-center justify-between text-muted">
-            <span className="text-xs font-bold uppercase tracking-wider">Parent Contacts</span>
-            <Phone className="size-4 text-emerald-600" />
-          </div>
-          <div className="mt-2 text-2xl font-black text-foreground">{metrics.totalContacts ?? 0}</div>
-          <div className="mt-1 text-[11px] text-muted">Active parent mobile numbers</div>
-        </div>
-
-        <div className="dashboard-card p-4">
-          <div className="flex items-center justify-between text-muted">
-            <span className="text-xs font-bold uppercase tracking-wider">Consent Granted</span>
-            <UserCheck className="size-4 text-emerald-600" />
-          </div>
-          <div className="mt-2 text-2xl font-black text-emerald-600">{metrics.consentsGranted ?? 0}</div>
-          <div className="mt-1 text-[11px] text-muted">Compliant for notifications</div>
-        </div>
-
-        <div className="dashboard-card p-4">
-          <div className="flex items-center justify-between text-muted">
-            <span className="text-xs font-bold uppercase tracking-wider">Consent Pending</span>
-            <Clock className="size-4 text-amber-500" />
-          </div>
-          <div className="mt-2 text-2xl font-black text-amber-500">{metrics.consentsPending ?? 0}</div>
-          <div className="mt-1 text-[11px] text-muted">Unset / Needs review</div>
-        </div>
-
-        <div className="dashboard-card p-4">
-          <div className="flex items-center justify-between text-muted">
-            <span className="text-xs font-bold uppercase tracking-wider">Messages Sent</span>
+            <span className="text-xs font-bold uppercase tracking-wider">Total Messages</span>
             <Send className="size-4 text-sky-600" />
           </div>
-          <div className="mt-2 text-2xl font-black text-foreground">{metrics.messagesSent ?? 0}</div>
-          <div className="mt-1 text-[11px] text-muted">Dispatched through system</div>
+          <div className="mt-2 text-2xl font-black text-foreground">
+            {metrics.messagesInitiated ?? 0}
+          </div>
+          <div className="mt-1 text-[11px] text-muted">Dispatched messages</div>
         </div>
 
         <div className="dashboard-card p-4">
@@ -606,8 +508,21 @@ export function WhatsAppCommunicationHub({
             <span className="text-xs font-bold uppercase tracking-wider">Delivered</span>
             <CheckCircle2 className="size-4 text-emerald-600" />
           </div>
-          <div className="mt-2 text-2xl font-black text-emerald-600">{metrics.messagesDelivered ?? 0}</div>
-          <div className="mt-1 text-[11px] text-muted">Verified delivered & read</div>
+          <div className="mt-2 text-2xl font-black text-emerald-600">
+            {metrics.messagesDelivered ?? 0}
+          </div>
+          <div className="mt-1 text-[11px] text-muted">Successfully delivered</div>
+        </div>
+
+        <div className="dashboard-card p-4">
+          <div className="flex items-center justify-between text-muted">
+            <span className="text-xs font-bold uppercase tracking-wider">Read Messages</span>
+            <MessageSquare className="size-4 text-teal-600" />
+          </div>
+          <div className="mt-2 text-2xl font-black text-teal-600">
+            {metrics.messagesRead ?? 0}
+          </div>
+          <div className="mt-1 text-[11px] text-muted">Confirmed read by parent</div>
         </div>
 
         <div className="dashboard-card p-4">
@@ -615,8 +530,32 @@ export function WhatsAppCommunicationHub({
             <span className="text-xs font-bold uppercase tracking-wider">Failed</span>
             <AlertCircle className="size-4 text-red-500" />
           </div>
-          <div className="mt-2 text-2xl font-black text-red-500">{metrics.messagesFailed ?? 0}</div>
-          <div className="mt-1 text-[11px] text-muted">Invalid phone / rejected</div>
+          <div className="mt-2 text-2xl font-black text-red-500">
+            {metrics.messagesFailed ?? 0}
+          </div>
+          <div className="mt-1 text-[11px] text-muted">Eligible for retry</div>
+        </div>
+
+        <div className="dashboard-card p-4">
+          <div className="flex items-center justify-between text-muted">
+            <span className="text-xs font-bold uppercase tracking-wider">Pending</span>
+            <Clock className="size-4 text-amber-500" />
+          </div>
+          <div className="mt-2 text-2xl font-black text-amber-500">
+            {metrics.messagesQueued ?? 0}
+          </div>
+          <div className="mt-1 text-[11px] text-muted">In dispatch queue</div>
+        </div>
+
+        <div className="dashboard-card p-4">
+          <div className="flex items-center justify-between text-muted">
+            <span className="text-xs font-bold uppercase tracking-wider">Opted-Out</span>
+            <UserX className="size-4 text-rose-500" />
+          </div>
+          <div className="mt-2 text-2xl font-black text-rose-500">
+            {metrics.optedOut ?? 0}
+          </div>
+          <div className="mt-1 text-[11px] text-muted">Do Not Contact list</div>
         </div>
       </div>
 
@@ -631,7 +570,7 @@ export function WhatsAppCommunicationHub({
           }`}
         >
           <Send className="size-3.5" />
-          <span>Students & Instant Share</span>
+          <span>Send Individual Message</span>
         </button>
 
         <button
@@ -647,19 +586,6 @@ export function WhatsAppCommunicationHub({
         </button>
 
         <button
-          onClick={() => setActiveTab("workflows")}
-          className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-bold transition ${
-            activeTab === "workflows"
-              ? "bg-emerald-600 text-white shadow-sm"
-              : "text-muted hover:bg-canvas hover:text-foreground"
-          }`}
-        >
-          <Zap className="size-3.5" />
-          <span>n8n Automated Workflows</span>
-          <span className="rounded-full bg-white/20 px-1.5 py-0.2 text-[10px] font-extrabold">8</span>
-        </button>
-
-        <button
           onClick={() => setActiveTab("history")}
           className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-bold transition ${
             activeTab === "history"
@@ -668,7 +594,7 @@ export function WhatsAppCommunicationHub({
           }`}
         >
           <Clock className="size-3.5" />
-          <span>Message Logs & Delivery</span>
+          <span>Message History & Delivery</span>
         </button>
 
         <button
@@ -680,12 +606,26 @@ export function WhatsAppCommunicationHub({
           }`}
         >
           <FileText className="size-3.5" />
-          <span>Message Templates (EN / KN)</span>
+          <span>Approved Templates</span>
         </button>
+
+        {!isTeacherView && (
+          <button
+            onClick={() => setActiveTab("configuration")}
+            className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-bold transition ${
+              activeTab === "configuration"
+                ? "bg-emerald-600 text-white shadow-sm"
+                : "text-muted hover:bg-canvas hover:text-foreground"
+            }`}
+          >
+            <Settings className="size-3.5" />
+            <span>Direct API Configuration</span>
+          </button>
+        )}
       </div>
 
       {/* ========================================================================= */}
-      {/* TAB 1: STUDENTS & INSTANT SHARE (Click-to-chat + Event Dispatch)          */}
+      {/* TAB 1: SEND INDIVIDUAL MESSAGE / STUDENTS DIRECT DISPATCH                 */}
       {/* ========================================================================= */}
       {activeTab === "students" && (
         <div className="space-y-4">
@@ -696,14 +636,22 @@ export function WhatsAppCommunicationHub({
                   <Search className="absolute left-3 top-2.5 size-4 text-muted" />
                   <input
                     type="text"
-                    placeholder="Search by student name, parent or admission number..."
                     value={search}
                     onChange={(e) => {
                       setSearch(e.target.value);
                       setPage(1);
                     }}
-                    className="h-9 w-full rounded-xl border bg-canvas pl-9 pr-3 text-xs outline-none focus:border-emerald-500"
+                    placeholder="Search by student, parent name, admission or phone..."
+                    className="h-9 w-full rounded-xl border bg-canvas pl-9 pr-3 text-xs outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
                   />
+                  {search && (
+                    <button
+                      onClick={() => setSearch("")}
+                      className="absolute right-2.5 top-2.5 text-muted hover:text-foreground"
+                    >
+                      <X className="size-3.5" />
+                    </button>
+                  )}
                 </div>
 
                 <select
@@ -712,11 +660,13 @@ export function WhatsAppCommunicationHub({
                     setClassFilter(e.target.value);
                     setPage(1);
                   }}
-                  className="h-9 rounded-xl border bg-canvas px-3 text-xs outline-none focus:border-emerald-500"
+                  className="h-9 rounded-xl border bg-canvas px-3 text-xs font-semibold outline-none focus:border-emerald-500"
                 >
                   <option value="ALL">All Classes</option>
                   {classOptions.map((c) => (
-                    <option key={c} value={c}>{c}</option>
+                    <option key={c} value={c}>
+                      Class {c}
+                    </option>
                   ))}
                 </select>
 
@@ -726,7 +676,7 @@ export function WhatsAppCommunicationHub({
                     setHasWhatsAppFilter(e.target.value as any);
                     setPage(1);
                   }}
-                  className="h-9 rounded-xl border bg-canvas px-3 text-xs outline-none focus:border-emerald-500"
+                  className="h-9 rounded-xl border bg-canvas px-3 text-xs font-semibold outline-none focus:border-emerald-500"
                 >
                   <option value="all">All Contacts</option>
                   <option value="yes">Has WhatsApp Number</option>
@@ -734,7 +684,7 @@ export function WhatsAppCommunicationHub({
                 </select>
               </div>
 
-              <div className="text-xs text-muted">
+              <div className="text-xs text-muted font-medium">
                 Showing {students.length} of {totalStudents} students
               </div>
             </div>
@@ -744,71 +694,132 @@ export function WhatsAppCommunicationHub({
           <div className="dashboard-card overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-canvas/80 text-[11px] font-bold uppercase tracking-wider text-muted border-b">
+                <thead className="border-b bg-canvas/75 text-[11px] font-bold uppercase tracking-wider text-muted">
                   <tr>
-                    <th className="p-3.5">Student</th>
-                    <th className="p-3.5">Class & Section</th>
-                    <th className="p-3.5">Parent / Guardian</th>
-                    <th className="p-3.5">WhatsApp Mobile</th>
-                    <th className="p-3.5">Consent Status</th>
-                    <th className="p-3.5 text-right">Actions</th>
+                    <th className="px-4 py-3">Student Details</th>
+                    <th className="px-4 py-3">Class & Section</th>
+                    <th className="px-4 py-3">Parent / Guardian</th>
+                    <th className="px-4 py-3">WhatsApp Mobile</th>
+                    <th className="px-4 py-3">Consent Status</th>
+                    <th className="px-4 py-3 text-right">Send Direct Message</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
                   {studentsLoading ? (
                     <tr>
-                      <td colSpan={6} className="p-8 text-center text-muted">
+                      <td colSpan={6} className="py-12 text-center text-muted">
                         <RefreshCw className="mx-auto size-5 animate-spin text-emerald-600 mb-2" />
-                        Loading student records...
+                        Loading student contacts...
                       </td>
                     </tr>
                   ) : students.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="p-8 text-center text-muted">
-                        No students match the current filters.
+                      <td colSpan={6} className="py-12 text-center text-muted">
+                        No students matching the criteria found.
                       </td>
                     </tr>
                   ) : (
                     students.map((student) => {
-                      const hasPhone = Boolean(student.parentPhone && student.parentPhone.trim().length >= 10);
+                      const hasPhone = Boolean(student.parentWhatsapp || student.parentPhone);
+                      const isOptedOut = student.whatsappConsentStatus === "OPTED_OUT";
+
                       return (
                         <tr key={student.id} className="hover:bg-canvas/50 transition">
-                          <td className="p-3.5">
+                          <td className="px-4 py-3.5">
                             <div className="font-bold text-foreground">{student.name}</div>
-                            <div className="text-[11px] text-muted">Adm: {student.admission} • Roll: {student.rollNumber || "—"}</div>
+                            <div className="text-[11px] text-muted font-mono">{student.admission}</div>
                           </td>
-                          <td className="p-3.5">
-                            <span className="inline-flex rounded-lg bg-canvas px-2.5 py-1 font-semibold text-foreground border">
+                          <td className="px-4 py-3.5">
+                            <span className="inline-flex rounded-lg bg-canvas px-2 py-0.5 font-semibold text-foreground border">
                               {student.className} - {student.section}
                             </span>
                           </td>
-                          <td className="p-3.5 font-medium text-foreground">
-                            {student.parent || "Parent"}
+                          <td className="px-4 py-3.5">
+                            <div className="font-semibold text-foreground">
+                              {student.parent || "Parent"}
+                            </div>
+                            <div className="text-[10px] text-muted">Guardian</div>
                           </td>
-                          <td className="p-3.5">
+                          <td className="px-4 py-3.5">
                             {hasPhone ? (
-                              <span className="font-mono text-emerald-600 dark:text-emerald-400 font-bold">
-                                {student.maskedPhone}
-                              </span>
+                              <div className="flex items-center gap-1.5 font-mono text-emerald-600 font-bold">
+                                <Phone className="size-3" />
+                                {student.parentWhatsapp || student.parentPhone}
+                              </div>
                             ) : (
-                              <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-0.5 text-[11px] font-bold text-amber-600">
-                                <AlertTriangle className="size-3" /> Missing Phone
+                              <span className="text-amber-600 text-[11px] font-medium">
+                                Not Available
                               </span>
                             )}
                           </td>
-                          <td className="p-3.5">
-                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-[11px] font-bold text-emerald-600">
-                              <CheckCircle2 className="size-3" /> Active
-                            </span>
+                          <td className="px-4 py-3.5">
+                            {student.whatsappConsentStatus === "GRANTED" ? (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-[10px] font-bold text-emerald-600">
+                                <CheckCircle2 className="size-3" /> Granted
+                              </span>
+                            ) : student.whatsappConsentStatus === "OPTED_OUT" ? (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-red-500/10 px-2.5 py-0.5 text-[10px] font-bold text-red-600">
+                                <UserX className="size-3" /> Opted Out
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2.5 py-0.5 text-[10px] font-bold text-amber-600">
+                                <Clock className="size-3" /> Pending
+                              </span>
+                            )}
                           </td>
-                          <td className="p-3.5 text-right">
-                            <button
-                              onClick={() => handleOpenShare(student, "STUDENT_INFO")}
-                              className="btn-primary h-8 px-3 text-xs font-bold gap-1.5"
-                            >
-                              <MessageCircle className="size-3.5" />
-                              Share via WhatsApp
-                            </button>
+                          <td className="px-4 py-3.5 text-right">
+                            <div className="flex items-center justify-end gap-1.5">
+                              {isOptedOut ? (
+                                <span className="text-[11px] text-red-500 italic font-medium">
+                                  Opted Out
+                                </span>
+                              ) : (
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    onClick={() =>
+                                      openShareModal(student.id, student.name, "ATTENDANCE")
+                                    }
+                                    disabled={!hasPhone}
+                                    title="Send Attendance Notice"
+                                    className="inline-flex size-7 items-center justify-center rounded-lg border bg-panel text-muted hover:border-emerald-500 hover:text-emerald-600 transition disabled:opacity-40"
+                                  >
+                                    <CalendarCheck2 className="size-3.5" />
+                                  </button>
+
+                                  {!isTeacherView && (
+                                    <button
+                                      onClick={() => openShareModal(student.id, student.name, "FEES")}
+                                      disabled={!hasPhone}
+                                      title="Send Fee Reminder"
+                                      className="inline-flex size-7 items-center justify-center rounded-lg border bg-panel text-muted hover:border-emerald-500 hover:text-emerald-600 transition disabled:opacity-40"
+                                    >
+                                      <IndianRupee className="size-3.5" />
+                                    </button>
+                                  )}
+
+                                  <button
+                                    onClick={() =>
+                                      openShareModal(student.id, student.name, "EXAM_RESULTS")
+                                    }
+                                    disabled={!hasPhone}
+                                    title="Send Exam / Marks Notice"
+                                    className="inline-flex size-7 items-center justify-center rounded-lg border bg-panel text-muted hover:border-emerald-500 hover:text-emerald-600 transition disabled:opacity-40"
+                                  >
+                                    <FileCheck2 className="size-3.5" />
+                                  </button>
+
+                                  <button
+                                    onClick={() =>
+                                      openShareModal(student.id, student.name, "STUDENT_INFO")
+                                    }
+                                    disabled={!hasPhone}
+                                    className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-emerald-700 transition disabled:opacity-40"
+                                  >
+                                    <Send className="size-3" /> Send
+                                  </button>
+                                </div>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       );
@@ -820,20 +831,22 @@ export function WhatsAppCommunicationHub({
 
             {/* Pagination */}
             {totalStudents > pageSize && (
-              <div className="flex items-center justify-between p-3.5 border-t text-xs text-muted">
-                <div>Page {page} of {Math.ceil(totalStudents / pageSize)}</div>
+              <div className="flex items-center justify-between border-t p-3 text-xs">
+                <span className="text-muted">
+                  Page {page} of {Math.ceil(totalStudents / pageSize)}
+                </span>
                 <div className="flex items-center gap-1">
                   <button
-                    disabled={page <= 1}
                     onClick={() => setPage((p) => Math.max(1, p - 1))}
-                    className="btn-secondary h-8 w-8 p-0 grid place-items-center disabled:opacity-40"
+                    disabled={page === 1}
+                    className="inline-flex size-7 items-center justify-center rounded-lg border bg-panel text-muted hover:text-foreground disabled:opacity-40"
                   >
                     <ChevronLeft className="size-4" />
                   </button>
                   <button
-                    disabled={page >= Math.ceil(totalStudents / pageSize)}
                     onClick={() => setPage((p) => p + 1)}
-                    className="btn-secondary h-8 w-8 p-0 grid place-items-center disabled:opacity-40"
+                    disabled={page * pageSize >= totalStudents}
+                    className="inline-flex size-7 items-center justify-center rounded-lg border bg-panel text-muted hover:text-foreground disabled:opacity-40"
                   >
                     <ChevronRight className="size-4" />
                   </button>
@@ -845,7 +858,7 @@ export function WhatsAppCommunicationHub({
       )}
 
       {/* ========================================================================= */}
-      {/* TAB 2: PARENT CONTACTS & CONSENT MANAGEMENT                                */}
+      {/* TAB 2: PARENT CONTACTS & CONSENT MANAGEMENT                               */}
       {/* ========================================================================= */}
       {activeTab === "contacts" && (
         <div className="space-y-4">
@@ -856,38 +869,27 @@ export function WhatsAppCommunicationHub({
                   <Search className="absolute left-3 top-2.5 size-4 text-muted" />
                   <input
                     type="text"
-                    placeholder="Search parent name, student, or phone..."
                     value={contactSearch}
                     onChange={(e) => setContactSearch(e.target.value)}
+                    placeholder="Search parent contacts by student, guardian or phone..."
                     className="h-9 w-full rounded-xl border bg-canvas pl-9 pr-3 text-xs outline-none focus:border-emerald-500"
                   />
                 </div>
 
                 <select
-                  value={contactClassFilter}
-                  onChange={(e) => setContactClassFilter(e.target.value)}
-                  className="h-9 rounded-xl border bg-canvas px-3 text-xs outline-none focus:border-emerald-500"
-                >
-                  <option value="ALL">All Classes</option>
-                  {classOptions.map((c) => (
-                    <option key={c} value={c}>{c}</option>
-                  ))}
-                </select>
-
-                <select
                   value={contactConsentFilter}
                   onChange={(e) => setContactConsentFilter(e.target.value)}
-                  className="h-9 rounded-xl border bg-canvas px-3 text-xs outline-none focus:border-emerald-500"
+                  className="h-9 rounded-xl border bg-canvas px-3 text-xs font-semibold outline-none focus:border-emerald-500"
                 >
                   <option value="ALL">All Consent States</option>
                   <option value="GRANTED">Consent Granted</option>
-                  <option value="PENDING">Consent Pending</option>
                   <option value="OPTED_OUT">Opted Out</option>
+                  <option value="UNKNOWN">Pending / Unknown</option>
                 </select>
               </div>
 
               <div className="text-xs text-muted">
-                {contacts.length} parent contacts loaded
+                Showing {contacts.length} parent contacts
               </div>
             </div>
           </div>
@@ -895,89 +897,72 @@ export function WhatsAppCommunicationHub({
           <div className="dashboard-card overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-canvas/80 text-[11px] font-bold uppercase tracking-wider text-muted border-b">
+                <thead className="border-b bg-canvas/75 text-[11px] font-bold uppercase tracking-wider text-muted">
                   <tr>
-                    <th className="p-3.5">Parent / Guardian</th>
-                    <th className="p-3.5">Associated Student</th>
-                    <th className="p-3.5">Normalized Mobile (E.164)</th>
-                    <th className="p-3.5">Number Validity</th>
-                    <th className="p-3.5">Consent Status</th>
-                    <th className="p-3.5 text-right">Actions</th>
+                    <th className="px-4 py-3">Student</th>
+                    <th className="px-4 py-3">Class</th>
+                    <th className="px-4 py-3">Parent Name</th>
+                    <th className="px-4 py-3">WhatsApp Number</th>
+                    <th className="px-4 py-3">Consent Status</th>
+                    <th className="px-4 py-3">Last Updated</th>
+                    <th className="px-4 py-3 text-right">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
                   {contactsLoading ? (
                     <tr>
-                      <td colSpan={6} className="p-8 text-center text-muted">
+                      <td colSpan={7} className="py-12 text-center text-muted">
                         <RefreshCw className="mx-auto size-5 animate-spin text-emerald-600 mb-2" />
-                        Loading parent contacts...
+                        Loading contacts...
                       </td>
                     </tr>
                   ) : contacts.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="p-8 text-center text-muted">
-                        No contacts found.
+                      <td colSpan={7} className="py-12 text-center text-muted">
+                        No parent contacts found matching criteria.
                       </td>
                     </tr>
                   ) : (
-                    contacts.map((contact) => (
-                      <tr key={contact.studentId} className="hover:bg-canvas/50 transition">
-                        <td className="p-3.5">
-                          <div className="font-bold text-foreground">{contact.parentName}</div>
-                          <div className="text-[11px] text-muted">Country: {contact.countryCode}</div>
+                    contacts.map((c) => (
+                      <tr key={c.studentId} className="hover:bg-canvas/50 transition">
+                        <td className="px-4 py-3 font-bold text-foreground">
+                          {c.studentName}
+                          <div className="text-[10px] text-muted font-mono">{c.admission}</div>
                         </td>
-                        <td className="p-3.5">
-                          <div className="font-semibold text-foreground">{contact.studentName}</div>
-                          <div className="text-[11px] text-muted">{contact.className} - {contact.section} • Adm: {contact.admissionNumber}</div>
+                        <td className="px-4 py-3 font-medium">
+                          {c.className} - {c.section}
                         </td>
-                        <td className="p-3.5 font-mono text-xs">
-                          {contact.maskedPhone}
+                        <td className="px-4 py-3">{c.parentName || "Parent / Guardian"}</td>
+                        <td className="px-4 py-3 font-mono font-bold text-emerald-600">
+                          {c.parentWhatsapp || c.parentPhone || "—"}
                         </td>
-                        <td className="p-3.5">
-                          {contact.isValidNumber ? (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-extrabold text-emerald-600">
-                              <Check className="size-3" /> Valid Indian Format
+                        <td className="px-4 py-3">
+                          {c.consentStatus === "GRANTED" ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-600">
+                              <CheckCircle2 className="size-3" /> Granted
                             </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-red-500/10 px-2 py-0.5 text-[10px] font-extrabold text-red-600">
-                              <AlertCircle className="size-3" /> Needs Correction
-                            </span>
-                          )}
-                        </td>
-                        <td className="p-3.5">
-                          {contact.isOptedOut ? (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-red-500/10 px-2 py-0.5 text-[10px] font-extrabold text-red-600">
+                          ) : c.consentStatus === "OPTED_OUT" ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-red-500/10 px-2 py-0.5 text-[10px] font-bold text-red-600">
                               <UserX className="size-3" /> Opted Out
                             </span>
-                          ) : contact.hasConsent ? (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-extrabold text-emerald-600">
-                              <UserCheck className="size-3" /> Consent Granted
-                            </span>
                           ) : (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-extrabold text-amber-600">
-                              <Clock className="size-3" /> Pending Record
+                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold text-amber-600">
+                              <Clock className="size-3" /> Pending
                             </span>
                           )}
                         </td>
-                        <td className="p-3.5 text-right">
-                          <div className="inline-flex items-center gap-1.5">
-                            <button
-                              onClick={() => setEditingContact({ ...contact })}
-                              className="btn-secondary h-8 px-2.5 text-xs font-semibold"
-                              title="Edit Phone & Consent"
-                            >
-                              <Edit2 className="size-3.5" /> Edit
-                            </button>
-                            {!contact.isOptedOut && (
-                              <button
-                                onClick={() => handleOptOut(contact.studentId, contact.studentName)}
-                                className="btn-secondary h-8 px-2 text-xs font-semibold text-red-600 hover:border-red-300"
-                                title="Opt Out Parent"
-                              >
-                                <UserX className="size-3.5" />
-                              </button>
-                            )}
-                          </div>
+                        <td className="px-4 py-3 text-muted text-[11px]">
+                          {c.consentUpdatedAt
+                            ? new Date(c.consentUpdatedAt).toLocaleDateString("en-IN")
+                            : "—"}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            onClick={() => setEditingContact({ ...c })}
+                            className="inline-flex items-center gap-1 rounded-lg border bg-panel px-2.5 py-1 text-xs font-semibold hover:border-emerald-500 hover:text-emerald-600 transition"
+                          >
+                            <Edit2 className="size-3" /> Edit
+                          </button>
                         </td>
                       </tr>
                     ))
@@ -987,102 +972,97 @@ export function WhatsAppCommunicationHub({
             </div>
           </div>
 
-          {/* Edit Contact Modal */}
+          {/* Edit Contact / Consent Modal */}
           {editingContact && (
-            <div className="fixed inset-0 z-[85] grid place-items-center bg-slate-950/70 p-4 backdrop-blur-sm">
-              <div className="w-full max-w-lg rounded-3xl border bg-panel p-6 shadow-2xl">
+            <div className="fixed inset-0 z-[80] grid place-items-center bg-slate-950/70 p-4 backdrop-blur-sm">
+              <div className="w-full max-w-md rounded-3xl border bg-panel p-6 shadow-2xl">
                 <div className="flex items-center justify-between pb-3 border-b">
                   <h3 className="text-base font-bold text-foreground">
-                    Edit WhatsApp Contact & Consent
+                    Edit Parent Contact & Consent
                   </h3>
                   <button onClick={() => setEditingContact(null)}>
                     <X className="size-5" />
                   </button>
                 </div>
 
-                <div className="mt-4 space-y-4">
+                <div className="mt-4 space-y-4 text-xs">
                   <div>
-                    <div className="text-xs text-muted">Student:</div>
-                    <div className="text-sm font-bold text-foreground">{editingContact.studentName} ({editingContact.className} - {editingContact.section})</div>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-foreground mb-1">
-                      Parent WhatsApp Mobile Number:
-                    </label>
+                    <label className="font-bold text-muted block mb-1">Student</label>
                     <input
-                      type="tel"
-                      value={editingContact.rawPhone || ""}
-                      onChange={(e) => setEditingContact({ ...editingContact, rawPhone: e.target.value })}
-                      placeholder="+919876543210 or 10-digit mobile"
-                      className="h-10 w-full rounded-xl border bg-canvas px-3 text-xs font-mono outline-none focus:border-emerald-500"
+                      type="text"
+                      disabled
+                      value={`${editingContact.studentName} (${editingContact.className} - ${editingContact.section})`}
+                      className="h-9 w-full rounded-xl border bg-canvas px-3 text-muted outline-none"
                     />
-                    <span className="text-[11px] text-muted mt-1 block">
-                      Indian numbers will be automatically formatted to +91 international standard.
-                    </span>
                   </div>
 
-                  <div className="rounded-xl border bg-canvas p-3 space-y-2">
-                    <label className="flex items-center gap-2 text-xs font-bold text-foreground cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={editingContact.hasConsent}
-                        onChange={(e) => setEditingContact({ ...editingContact, hasConsent: e.target.checked })}
-                        className="rounded"
-                      />
-                      <span>Parent Communication Consent Established</span>
-                    </label>
+                  <div>
+                    <label className="font-bold text-muted block mb-1">Parent WhatsApp Number (E.164)</label>
+                    <input
+                      type="text"
+                      value={editingContact.parentWhatsapp || editingContact.parentPhone || ""}
+                      onChange={(e) =>
+                        setEditingContact({
+                          ...editingContact,
+                          parentWhatsapp: e.target.value,
+                          parentPhone: e.target.value,
+                        })
+                      }
+                      placeholder="+919876543210"
+                      className="h-9 w-full rounded-xl border bg-canvas px-3 font-mono outline-none focus:border-emerald-500"
+                    />
+                    <p className="mt-1 text-[11px] text-muted">
+                      Use 10-digit mobile or international format (+919876543210).
+                    </p>
+                  </div>
 
-                    <div className="grid grid-cols-2 gap-2 pt-2 border-t text-xs">
-                      <label className="flex items-center gap-1.5 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={editingContact.categories?.attendance ?? true}
-                          onChange={(e) => setEditingContact({
-                            ...editingContact,
-                            categories: { ...editingContact.categories, attendance: e.target.checked },
-                          })}
-                        />
-                        <span>Attendance Alerts</span>
-                      </label>
-                      <label className="flex items-center gap-1.5 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={editingContact.categories?.fees ?? true}
-                          onChange={(e) => setEditingContact({
-                            ...editingContact,
-                            categories: { ...editingContact.categories, fees: e.target.checked },
-                          })}
-                        />
-                        <span>Fee Reminders</span>
-                      </label>
-                      <label className="flex items-center gap-1.5 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={editingContact.categories?.academics ?? true}
-                          onChange={(e) => setEditingContact({
-                            ...editingContact,
-                            categories: { ...editingContact.categories, academics: e.target.checked },
-                          })}
-                        />
-                        <span>Marks & Homework</span>
-                      </label>
-                      <label className="flex items-center gap-1.5 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={editingContact.categories?.notices ?? true}
-                          onChange={(e) => setEditingContact({
-                            ...editingContact,
-                            categories: { ...editingContact.categories, notices: e.target.checked },
-                          })}
-                        />
-                        <span>School Notices</span>
-                      </label>
+                  <div>
+                    <label className="font-bold text-muted block mb-1">Consent Status</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setEditingContact({ ...editingContact, consentStatus: "GRANTED" })
+                        }
+                        className={`rounded-xl border p-2 text-center font-bold transition ${
+                          editingContact.consentStatus === "GRANTED"
+                            ? "border-emerald-500 bg-emerald-500/10 text-emerald-600"
+                            : "bg-canvas text-muted hover:border-slate-400"
+                        }`}
+                      >
+                        Granted
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setEditingContact({ ...editingContact, consentStatus: "UNKNOWN" })
+                        }
+                        className={`rounded-xl border p-2 text-center font-bold transition ${
+                          editingContact.consentStatus === "UNKNOWN"
+                            ? "border-amber-500 bg-amber-500/10 text-amber-600"
+                            : "bg-canvas text-muted hover:border-slate-400"
+                        }`}
+                      >
+                        Pending
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setEditingContact({ ...editingContact, consentStatus: "OPTED_OUT" })
+                        }
+                        className={`rounded-xl border p-2 text-center font-bold transition ${
+                          editingContact.consentStatus === "OPTED_OUT"
+                            ? "border-red-500 bg-red-500/10 text-red-600"
+                            : "bg-canvas text-muted hover:border-slate-400"
+                        }`}
+                      >
+                        Opted Out
+                      </button>
                     </div>
                   </div>
                 </div>
 
-                <div className="mt-5 flex items-center justify-end gap-2 pt-3 border-t">
+                <div className="mt-6 flex items-center justify-end gap-2 pt-3 border-t">
                   <button
                     onClick={() => setEditingContact(null)}
                     className="btn-secondary h-9 px-4 text-xs font-semibold"
@@ -1090,8 +1070,8 @@ export function WhatsAppCommunicationHub({
                     Cancel
                   </button>
                   <button
-                    disabled={savingContact}
                     onClick={handleSaveContact}
+                    disabled={savingContact}
                     className="btn-primary h-9 px-4 text-xs font-bold"
                   >
                     {savingContact ? "Saving..." : "Save Changes"}
@@ -1104,118 +1084,7 @@ export function WhatsAppCommunicationHub({
       )}
 
       {/* ========================================================================= */}
-      {/* TAB 3: n8n AUTOMATION WORKFLOWS (Workflows A to H)                         */}
-      {/* ========================================================================= */}
-      {activeTab === "workflows" && (
-        <div className="space-y-6">
-          <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-xs text-sky-950 dark:border-sky-900/40 dark:bg-sky-950/30 dark:text-sky-200">
-            <div className="flex items-start gap-3">
-              <Zap className="size-5 text-sky-600 shrink-0 mt-0.5" />
-              <div className="space-y-1">
-                <span className="font-bold text-sm">How n8n Automation Works with EduLedger:</span>
-                <p className="leading-relaxed">
-                  EduLedger triggers signed HTTP webhooks when school events happen. n8n executes the logic, validates student consent, retrieves parent details, formats messages, and delivers them directly via the official WhatsApp Business Cloud API.
-                </p>
-                <div className="flex flex-wrap gap-3 pt-1 font-mono text-[11px]">
-                  <span>• Webhook Auth: HMAC-SHA256</span>
-                  <span>• Target: Official Cloud API</span>
-                  <span>• Retry: Exponential Backoff</span>
-                  <span>• Workflows: 8 Ready to Import</span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {N8N_WORKFLOWS_CATALOG.map((wf) => (
-              <div key={wf.id} className="dashboard-card flex flex-col justify-between p-5 hover:border-emerald-300 transition">
-                <div>
-                  <div className="flex items-center justify-between">
-                    <span className="rounded-lg bg-emerald-500/10 px-2 py-0.5 font-mono text-[11px] font-black text-emerald-600">
-                      {wf.code}
-                    </span>
-                    <span className="rounded-full bg-canvas px-2 py-0.5 text-[10px] font-bold text-muted border">
-                      {wf.category}
-                    </span>
-                  </div>
-
-                  <h3 className="mt-2.5 text-sm font-bold text-foreground">
-                    {wf.name}
-                  </h3>
-                  <p className="mt-1 text-[11px] text-muted line-clamp-2">
-                    {wf.summary}
-                  </p>
-
-                  <div className="mt-3 rounded-xl bg-canvas p-2.5 text-[11px]">
-                    <span className="font-bold text-muted block mb-1">Trigger Event:</span>
-                    <code className="text-emerald-600 font-mono text-[10px]">{wf.trigger}</code>
-                  </div>
-                </div>
-
-                <div className="mt-4 pt-3 border-t flex items-center justify-between">
-                  <button
-                    onClick={() => handleOpenWorkflowModal(wf)}
-                    className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-600 hover:text-emerald-700"
-                  >
-                    <FileCode className="size-3.5" /> View / Copy JSON
-                  </button>
-                  <span className="size-2 rounded-full bg-emerald-500 animate-pulse" />
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* Workflow JSON Modal */}
-          {viewingWorkflow && (
-            <div className="fixed inset-0 z-[85] grid place-items-center bg-slate-950/70 p-4 backdrop-blur-sm">
-              <div className="w-full max-w-3xl rounded-3xl border bg-panel p-6 shadow-2xl">
-                <div className="flex items-center justify-between pb-3 border-b">
-                  <div>
-                    <h3 className="text-base font-bold text-foreground">
-                      {viewingWorkflow.code}: {viewingWorkflow.name} (n8n Workflow JSON)
-                    </h3>
-                    <p className="text-xs text-muted mt-0.5">
-                      Copy and import this JSON directly into your n8n workspace via &quot;Import from JSON&quot;.
-                    </p>
-                  </div>
-                  <button onClick={() => setViewingWorkflow(null)}>
-                    <X className="size-5" />
-                  </button>
-                </div>
-
-                <div className="mt-4 space-y-3">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-mono text-muted">File: {viewingWorkflow.filename}</span>
-                    <button
-                      onClick={copyWorkflowJson}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-emerald-700 transition"
-                    >
-                      {copiedWorkflow ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-                      {copiedWorkflow ? "Copied to Clipboard!" : "Copy Workflow JSON"}
-                    </button>
-                  </div>
-
-                  <pre className="max-h-96 overflow-y-auto rounded-2xl border bg-slate-950 p-4 font-mono text-[11px] text-emerald-300 leading-relaxed">
-                    {workflowJsonString}
-                  </pre>
-                </div>
-
-                <div className="mt-4 pt-3 border-t flex items-center justify-end">
-                  <button
-                    onClick={() => setViewingWorkflow(null)}
-                    className="btn-secondary h-9 px-4 text-xs font-semibold"
-                  >
-                    Close
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ========================================================================= */}
-      {/* TAB 4: MESSAGE LOGS & DELIVERY TRACKING (Live from DB)                    */}
+      {/* TAB 3: MESSAGE HISTORY & DELIVERY STATUS TRACKING (Direct Meta)           */}
       {/* ========================================================================= */}
       {activeTab === "history" && (
         <div className="space-y-4">
@@ -1226,9 +1095,9 @@ export function WhatsAppCommunicationHub({
                   <Search className="absolute left-3 top-2.5 size-4 text-muted" />
                   <input
                     type="text"
-                    placeholder="Search message history by student or recipient..."
                     value={historySearch}
                     onChange={(e) => setHistorySearch(e.target.value)}
+                    placeholder="Search history by student, recipient or message type..."
                     className="h-9 w-full rounded-xl border bg-canvas pl-9 pr-3 text-xs outline-none focus:border-emerald-500"
                   />
                 </div>
@@ -1236,18 +1105,19 @@ export function WhatsAppCommunicationHub({
                 <select
                   value={historyStatusFilter}
                   onChange={(e) => setHistoryStatusFilter(e.target.value)}
-                  className="h-9 rounded-xl border bg-canvas px-3 text-xs outline-none focus:border-emerald-500"
+                  className="h-9 rounded-xl border bg-canvas px-3 text-xs font-semibold outline-none focus:border-emerald-500"
                 >
                   <option value="ALL">All Delivery Statuses</option>
+                  <option value="Sent">Sent to Meta</option>
                   <option value="Delivered">Delivered</option>
-                  <option value="Sent">Sent</option>
-                  <option value="Queued">Queued / Sending</option>
-                  <option value="Failed">Failed</option>
+                  <option value="Read">Read by Parent</option>
+                  <option value="Queued">Queued / Pending</option>
+                  <option value="Failed">Failed Messages</option>
                 </select>
               </div>
 
               <div className="text-xs text-muted">
-                {totalHistory} total communication records
+                Total Recorded: {totalHistory} messages
               </div>
             </div>
           </div>
@@ -1255,86 +1125,118 @@ export function WhatsAppCommunicationHub({
           <div className="dashboard-card overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-canvas/80 text-[11px] font-bold uppercase tracking-wider text-muted border-b">
+                <thead className="border-b bg-canvas/75 text-[11px] font-bold uppercase tracking-wider text-muted">
                   <tr>
-                    <th className="p-3.5">Recipient (Masked)</th>
-                    <th className="p-3.5">Student</th>
-                    <th className="p-3.5">Category / Template</th>
-                    <th className="p-3.5">Status</th>
-                    <th className="p-3.5">Dispatched By</th>
-                    <th className="p-3.5">Date & Time</th>
+                    <th className="px-4 py-3">Student & Recipient</th>
+                    <th className="px-4 py-3">Message Type</th>
+                    <th className="px-4 py-3">Meta Message ID</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3">Sent By</th>
+                    <th className="px-4 py-3">Timestamp</th>
+                    <th className="px-4 py-3 text-right">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
                   {historyLoading ? (
                     <tr>
-                      <td colSpan={6} className="p-8 text-center text-muted">
+                      <td colSpan={7} className="py-12 text-center text-muted">
                         <RefreshCw className="mx-auto size-5 animate-spin text-emerald-600 mb-2" />
                         Loading communication history...
                       </td>
                     </tr>
                   ) : history.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="p-8 text-center text-muted">
-                        No WhatsApp communication records found.
+                      <td colSpan={7} className="py-12 text-center text-muted">
+                        No communication history found matching filters.
                       </td>
                     </tr>
                   ) : (
-                    history.map((item) => {
-                      const isDelivered = item.status === "Delivered" || item.status === "Read";
-                      const isFailed = item.status === "Failed";
-                      const isQueued = item.status === "Queued" || item.status === "Sending";
-
+                    history.map((msg) => {
+                      const isFailed = msg.status === "Failed";
                       return (
-                        <tr key={item.id} className="hover:bg-canvas/50 transition">
-                          <td className="p-3.5">
-                            <div className="font-bold text-foreground">{item.recipientName}</div>
-                            <div className="font-mono text-[11px] text-muted">{item.recipientPhone}</div>
+                        <tr key={msg.id} className="hover:bg-canvas/50 transition">
+                          <td className="px-4 py-3.5">
+                            <div className="font-bold text-foreground">
+                              {msg.studentName || msg.recipientName || "Parent Contact"}
+                            </div>
+                            <div className="text-[11px] text-muted font-mono">
+                              {msg.recipientPhone}
+                            </div>
                           </td>
-                          <td className="p-3.5">
-                            <div className="font-semibold text-foreground">{item.studentName || "—"}</div>
-                            <div className="text-[11px] text-muted">{item.className} {item.section}</div>
+                          <td className="px-4 py-3.5 font-medium">
+                            <span className="rounded-md bg-canvas px-2 py-0.5 text-[11px] font-semibold border">
+                              {msg.messageType}
+                            </span>
                           </td>
-                          <td className="p-3.5">
-                            <div className="font-semibold text-foreground">{item.messageType}</div>
-                            <div className="text-[11px] text-muted font-mono">{item.templateName}</div>
-                          </td>
-                          <td className="p-3.5">
-                            {isDelivered ? (
-                              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-[10px] font-extrabold text-emerald-600">
-                                <CheckCircle2 className="size-3" /> Delivered
-                              </span>
-                            ) : isFailed ? (
-                              <div>
-                                <span className="inline-flex items-center gap-1 rounded-full bg-red-500/10 px-2.5 py-0.5 text-[10px] font-extrabold text-red-600">
-                                  <AlertCircle className="size-3" /> Failed
-                                </span>
-                                {item.errorMessage && (
-                                  <div className="text-[10px] text-red-500 mt-0.5 max-w-xs truncate" title={item.errorMessage}>
-                                    {item.errorMessage}
-                                  </div>
-                                )}
-                              </div>
-                            ) : isQueued ? (
-                              <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2.5 py-0.5 text-[10px] font-extrabold text-amber-600">
-                                <Clock className="size-3" /> {item.status}
+                          <td className="px-4 py-3.5 font-mono text-[11px] text-muted">
+                            {msg.providerMessageId ? (
+                              <span title={msg.providerMessageId}>
+                                {msg.providerMessageId.slice(0, 16)}...
                               </span>
                             ) : (
-                              <span className="inline-flex items-center gap-1 rounded-full bg-sky-500/10 px-2.5 py-0.5 text-[10px] font-extrabold text-sky-600">
-                                <Send className="size-3" /> {item.status}
-                              </span>
+                              "—"
                             )}
                           </td>
-                          <td className="p-3.5 text-muted">
-                            {item.sentBy || "System Auto"}
+                          <td className="px-4 py-3.5">
+                            {msg.status === "Delivered" ? (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-600">
+                                <CheckCircle2 className="size-3" /> Delivered
+                              </span>
+                            ) : msg.status === "Read" ? (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-teal-500/10 px-2 py-0.5 text-[10px] font-bold text-teal-600">
+                                <CheckCircle2 className="size-3" /> Read
+                              </span>
+                            ) : msg.status === "Sent" ? (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-bold text-sky-600">
+                                <Send className="size-3" /> Sent
+                              </span>
+                            ) : msg.status === "Failed" ? (
+                              <span
+                                title={msg.errorMessage || "Delivery failed"}
+                                className="inline-flex items-center gap-1 rounded-full bg-red-500/10 px-2 py-0.5 text-[10px] font-bold text-red-600"
+                              >
+                                <AlertCircle className="size-3" /> Failed
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold text-amber-600">
+                                <Clock className="size-3" /> Queued
+                              </span>
+                            )}
+                            {msg.errorMessage && (
+                              <div
+                                className="text-[10px] text-red-500 mt-0.5 max-w-[200px] truncate"
+                                title={msg.errorMessage}
+                              >
+                                {msg.errorMessage}
+                              </div>
+                            )}
                           </td>
-                          <td className="p-3.5 text-muted whitespace-nowrap">
-                            {new Date(item.createdAt).toLocaleString("en-IN", {
-                              day: "numeric",
-                              month: "short",
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })}
+                          <td className="px-4 py-3.5 text-muted text-[11px]">
+                            {msg.sentBy || "System"}
+                          </td>
+                          <td className="px-4 py-3.5 text-muted text-[11px]">
+                            {msg.createdAt
+                              ? new Date(msg.createdAt).toLocaleString("en-IN", {
+                                  day: "numeric",
+                                  month: "short",
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })
+                              : "—"}
+                          </td>
+                          <td className="px-4 py-3.5 text-right">
+                            {isFailed && (
+                              <button
+                                onClick={() => handleRetryMessage(msg.id)}
+                                disabled={retryingId === msg.id}
+                                className="inline-flex items-center gap-1 rounded-lg border border-red-200 bg-red-50 px-2.5 py-1 text-xs font-bold text-red-700 hover:bg-red-100 transition disabled:opacity-50 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300"
+                              >
+                                <RotateCw
+                                  className={`size-3 ${retryingId === msg.id ? "animate-spin" : ""}`}
+                                />
+                                Retry
+                              </button>
+                            )}
                           </td>
                         </tr>
                       );
@@ -1348,55 +1250,56 @@ export function WhatsAppCommunicationHub({
       )}
 
       {/* ========================================================================= */}
-      {/* TAB 5: MESSAGE TEMPLATES (English, Kannada, Custom)                        */}
+      {/* TAB 4: APPROVED MESSAGE TEMPLATES                                         */}
       {/* ========================================================================= */}
       {activeTab === "templates" && (
         <div className="space-y-6">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-base font-bold text-foreground">Message Templates</h2>
-              <p className="text-xs text-muted">Multi-language WhatsApp templates with verified placeholders.</p>
+              <h2 className="text-base font-bold text-foreground">Official Message Templates</h2>
+              <p className="text-xs text-muted">
+                Pre-approved templates for attendance, fee reminders, exams, homework, and announcements.
+              </p>
             </div>
-
             <div className="flex items-center gap-2">
               <select
                 value={templateLangFilter}
                 onChange={(e) => setTemplateLangFilter(e.target.value as any)}
-                className="h-8 rounded-xl border bg-canvas px-3 text-xs outline-none focus:border-emerald-500"
+                className="h-9 rounded-xl border bg-canvas px-3 text-xs font-semibold outline-none focus:border-emerald-500"
               >
                 <option value="all">All Languages</option>
-                <option value="en">English Templates</option>
-                <option value="kn">ಕನ್ನಡ (Kannada) Templates</option>
+                <option value="en">English (en)</option>
+                <option value="kn">Kannada (kn)</option>
               </select>
             </div>
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {SYSTEM_TEMPLATES.filter((t) => templateLangFilter === "all" || t.language === templateLangFilter).map((tmpl) => (
-              <div key={tmpl.id} className="dashboard-card flex flex-col justify-between p-5">
+            {SYSTEM_TEMPLATES.filter((t) =>
+              templateLangFilter === "all" ? true : t.language === templateLangFilter
+            ).map((tpl) => (
+              <div key={tpl.id} className="dashboard-card flex flex-col justify-between p-5">
                 <div>
                   <div className="flex items-center justify-between">
-                    <span className="rounded-lg bg-canvas px-2.5 py-0.5 font-bold text-[10px] uppercase text-muted border">
-                      {tmpl.category}
+                    <span className="rounded-lg bg-emerald-500/10 px-2 py-0.5 text-[10px] font-mono font-bold text-emerald-600">
+                      {tpl.category}
                     </span>
-                    <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-600">
-                      {tmpl.languageName}
+                    <span className="rounded-full bg-canvas px-2 py-0.5 text-[10px] font-bold text-muted border uppercase">
+                      {tpl.language}
                     </span>
                   </div>
 
-                  <h3 className="mt-2 text-sm font-bold text-foreground">{tmpl.title}</h3>
-
-                  <div className="mt-3 rounded-xl border bg-canvas p-3 font-mono text-[11px] leading-relaxed max-h-48 overflow-y-auto whitespace-pre-wrap">
-                    {tmpl.body}
-                  </div>
+                  <h3 className="mt-2 text-sm font-bold text-foreground">{tpl.name}</h3>
+                  <p className="mt-2 text-xs text-muted bg-canvas p-3 rounded-xl whitespace-pre-wrap font-sans leading-relaxed border">
+                    {tpl.body}
+                  </p>
                 </div>
 
-                <div className="mt-3 pt-3 border-t flex flex-wrap gap-1 text-[10px] text-muted">
-                  <span className="font-bold">Placeholders:</span>
-                  {tmpl.placeholders.slice(0, 4).map((p) => (
-                    <code key={p} className="bg-canvas px-1 rounded">{`{{${p}}}`}</code>
-                  ))}
-                  {tmpl.placeholders.length > 4 && <span>+{tmpl.placeholders.length - 4} more</span>}
+                <div className="mt-4 pt-3 border-t text-[11px] text-muted flex items-center justify-between">
+                  <span>Variables: {tpl.placeholders?.length || 0}</span>
+                  <span className="inline-flex items-center gap-1 font-semibold text-emerald-600">
+                    <ShieldCheck className="size-3" /> Meta Approved
+                  </span>
                 </div>
               </div>
             ))}
@@ -1404,20 +1307,139 @@ export function WhatsAppCommunicationHub({
         </div>
       )}
 
-      {/* Global WhatsApp Share Modal (Click-to-chat + Send Event) */}
-      {modalStudentId && (
+      {/* ========================================================================= */}
+      {/* TAB 5: DIRECT WHATSAPP CLOUD API CONFIGURATION (Meta Official)            */}
+      {/* ========================================================================= */}
+      {activeTab === "configuration" && !isTeacherView && (
+        <div className="space-y-6">
+          <div className="dashboard-card p-6">
+            <div className="flex items-start justify-between">
+              <div>
+                <h2 className="text-base font-bold text-foreground">
+                  Direct WhatsApp Cloud API Connection
+                </h2>
+                <p className="text-xs text-muted mt-1">
+                  Server-side connection parameters for official Meta WhatsApp Business Cloud API.
+                </p>
+              </div>
+              <span
+                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold ${
+                  isDirectCloudConfigured
+                    ? "bg-emerald-500/15 text-emerald-600 border border-emerald-500/30"
+                    : "bg-red-500/15 text-red-600 border border-red-500/30"
+                }`}
+              >
+                <span
+                  className={`size-2 rounded-full ${
+                    isDirectCloudConfigured ? "bg-emerald-500" : "bg-red-500"
+                  }`}
+                />
+                {isDirectCloudConfigured ? "Configured on Server" : "Credentials Required"}
+              </span>
+            </div>
+
+            {!isDirectCloudConfigured && (
+              <div className="mt-5 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-xs text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-200">
+                <div className="flex items-start gap-2.5">
+                  <AlertTriangle className="size-5 text-amber-600 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <span className="font-bold text-sm">Configuration Required:</span>
+                    <p className="leading-relaxed">
+                      WhatsApp Cloud API is not configured. Complete the required server-side configuration to enable messaging.
+                    </p>
+                    <div className="mt-2 font-mono text-[11px] space-y-1 bg-amber-100/50 dark:bg-amber-900/30 p-2.5 rounded-xl">
+                      <div>Missing environment variables:</div>
+                      {env.missing?.map((m: string) => (
+                        <div key={m} className="text-red-600 dark:text-red-400 font-bold">
+                          • {m}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="mt-6 grid gap-4 sm:grid-cols-2">
+              <div className="rounded-2xl border bg-canvas p-4">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-muted">
+                  Phone Number ID
+                </span>
+                <div className="mt-1 font-mono text-sm font-bold text-foreground">
+                  {env.details?.phoneNumberIdMasked || "Not Set"}
+                </div>
+                <div className="mt-1 text-[11px] text-muted">
+                  Meta Graph Phone Number ID
+                </div>
+              </div>
+
+              <div className="rounded-2xl border bg-canvas p-4">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-muted">
+                  Business Account ID (WABA)
+                </span>
+                <div className="mt-1 font-mono text-sm font-bold text-foreground">
+                  {env.details?.businessAccountIdMasked || "Not Set"}
+                </div>
+                <div className="mt-1 text-[11px] text-muted">
+                  WhatsApp Business Account identifier
+                </div>
+              </div>
+
+              <div className="rounded-2xl border bg-canvas p-4">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-muted">
+                  Meta Graph API Version
+                </span>
+                <div className="mt-1 font-mono text-sm font-bold text-foreground">
+                  {env.details?.graphVersion || "v21.0"}
+                </div>
+                <div className="mt-1 text-[11px] text-muted">Official Meta Cloud API version</div>
+              </div>
+
+              <div className="rounded-2xl border bg-canvas p-4">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-muted">
+                  Incoming Webhook URL
+                </span>
+                <div className="mt-1 font-mono text-xs font-bold text-emerald-600 truncate">
+                  https://eduledger.co.in/api/whatsapp/webhook
+                </div>
+                <div className="mt-1 text-[11px] text-muted">
+                  Configure in Meta App Dashboard under Webhooks
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-6 rounded-2xl border bg-panel p-4">
+              <h4 className="text-xs font-bold text-foreground mb-2">
+                Server Environment Variables Guide
+              </h4>
+              <p className="text-[11px] text-muted mb-3">
+                Place these secrets in your server configuration (<code className="font-mono">.env.local</code> / Vercel Environment Variables):
+              </p>
+              <pre className="rounded-xl border bg-canvas p-3 font-mono text-[11px] text-emerald-700 dark:text-emerald-300 overflow-x-auto leading-relaxed">
+{`WHATSAPP_ENABLED="true"
+WHATSAPP_DISPATCH_ENABLED="1"
+WHATSAPP_ACCESS_TOKEN="EAA..."
+WHATSAPP_PHONE_NUMBER_ID="1029384756..."
+WHATSAPP_BUSINESS_ACCOUNT_ID="987654321..."
+WHATSAPP_VERIFY_TOKEN="your_random_verify_token_at_least_32_chars"
+WHATSAPP_APP_SECRET="your_meta_app_secret"
+WHATSAPP_GRAPH_VERSION="v21.0"`}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Quick Share Modal for sending with explicit preview & confirmation */}
+      {isModalOpen && modalStudentId && (
         <WhatsAppShareModal
-          isOpen={isModalOpen}
           studentId={modalStudentId}
           studentName={modalStudentName}
           initialCategory={modalCategory}
-          userRole={userRole}
-          onClose={() => {
-            setIsModalOpen(false);
-            setModalStudentId(null);
-          }}
-          onShareInitiated={(cat, phone) => {
-            showToast(`WhatsApp communication initiated for ${modalStudentName} (${cat})`);
+          isOpen={isModalOpen}
+          onClose={() => setIsModalOpen(false)}
+          onShareInitiated={() => {
+            showToast("WhatsApp message initiated successfully.");
             loadStatus();
             if (activeTab === "history") loadHistory();
           }}

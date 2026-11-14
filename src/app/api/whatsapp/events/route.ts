@@ -2,13 +2,24 @@
 import { z } from "zod";
 import { currentUser } from "@/lib/session";
 import { getDb, getInstitution, getStudent, teacherPortalScope, teacherHasAssignment } from "@/lib/db";
-import { dispatchToN8n, type WebhookEventPayload, type WhatsAppEventType } from "@/lib/whatsapp-n8n";
+import { dispatchDirectWhatsAppMessage } from "@/lib/whatsapp-cloud";
 import { normalizeWhatsAppNumber, maskWhatsAppNumber } from "@/lib/whatsapp";
 import { SYSTEM_TEMPLATES, interpolateTemplate } from "@/lib/whatsapp-templates";
 import { evaluateWhatsAppDispatchRateLimit } from "@/lib/whatsapp-rate-limit";
 import { randomUUID } from "node:crypto";
 
 export const runtime = "nodejs";
+
+export type WhatsAppEventType =
+  | "attendance.marked"
+  | "fee.reminder"
+  | "fee.payment_received"
+  | "examination.published"
+  | "homework.published"
+  | "announcement.published"
+  | "leave.status_updated"
+  | "timetable.updated"
+  | "manual.custom_message";
 
 const eventSchema = z.object({
   eventType: z.enum([
@@ -215,40 +226,7 @@ export async function POST(request: Request) {
     ? customMessage.trim()
     : interpolateTemplate(matchedTemplate.body, templateVars);
 
-  // 6. Build event payload for n8n
-  const eventPayload: WebhookEventPayload = {
-    eventId: `evt_${randomUUID()}`,
-    eventType,
-    timestamp: new Date().toISOString(),
-    schoolId: institution.id,
-    schoolName: institution.name,
-    schoolCode: institution.schoolCode || "EDU",
-    student: {
-      id: student.id,
-      name: student.name,
-      admission: student.admission,
-      className: student.className,
-      section: student.section,
-      rollNumber: student.rollNumber,
-    },
-    parent: {
-      name: student.parent || "Parent / Guardian",
-      phone: normalizedPhone,
-      rawPhone: rawParentPhone,
-      relationship: (student as unknown as { parentRelationship?: string }).parentRelationship || "Parent",
-      hasConsent: consentStatus === "GRANTED",
-      optedOut: isOptedOut,
-    },
-    data: eventData,
-    template: {
-      name: matchedTemplate.name,
-      category: matchedTemplate.category,
-      language: matchedTemplate.language,
-      renderedMessage: renderedBody,
-    },
-  };
-
-  // 7. Record in whatsapp_messages table
+  // 6. Record message in whatsapp_messages table
   const dbMessageId = randomUUID();
   await db.unsafe(
     `INSERT INTO whatsapp_messages (
@@ -281,10 +259,19 @@ export async function POST(request: Request) {
     ] as never[]
   );
 
-  // 8. Dispatch to n8n webhook
-  const dispatchResult = await dispatchToN8n(eventPayload);
+  // 7. Direct dispatch to WhatsApp Business Cloud API
+  const dispatchResult = await dispatchDirectWhatsAppMessage({
+    to: normalizedPhone,
+    text: renderedBody,
+    templateName: matchedTemplate.name,
+    templateLanguage: language,
+    schoolId: institution.id,
+    schoolName: institution.name,
+    studentId: student.id,
+    parentName: student.parent || "Parent",
+  });
 
-  // Update status based on dispatch result
+  // 8. Update database record with direct Cloud API result
   if (dispatchResult.success) {
     await db.unsafe(
       `UPDATE whatsapp_messages
@@ -303,7 +290,7 @@ export async function POST(request: Request) {
            failed_at = CURRENT_TIMESTAMP,
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $2`,
-      [dispatchResult.error || "Dispatch failed", dbMessageId] as never[]
+      [dispatchResult.error || "Direct dispatch failed", dbMessageId] as never[]
     );
   }
 
@@ -312,7 +299,7 @@ export async function POST(request: Request) {
     messageId: dbMessageId,
     providerMessageId: dispatchResult.messageId,
     status: dispatchResult.success ? "Sent" : "Failed",
-    forwardedToN8n: dispatchResult.forwardedToN8n,
+    provider: "whatsapp_cloud",
     error: dispatchResult.error,
     recipient: maskWhatsAppNumber(normalizedPhone),
   });

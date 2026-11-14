@@ -1,4 +1,8 @@
 // src/app/api/whatsapp/status/route.ts
+/**
+ * Direct WhatsApp Cloud API status and metrics endpoint for EduLedger.
+ * Single Direct WhatsApp Cloud API — n8n and alternative providers removed.
+ */
 import { currentUser } from "@/lib/session";
 import { getDb, getWhatsAppConfiguration } from "@/lib/db";
 import { getWhatsAppIntegrationStatus } from "@/lib/whatsapp-config";
@@ -14,7 +18,7 @@ export async function GET() {
   const institutionId = user.institutionId;
   const db = await getDb();
 
-  // 1. Integration environment readiness
+  // 1. Direct WhatsApp Cloud API environment readiness
   const envStatus = getWhatsAppIntegrationStatus();
 
   // 2. School-specific WhatsApp configuration
@@ -76,6 +80,7 @@ export async function GET() {
 
   return Response.json({
     ok: true,
+    provider: "Direct WhatsApp Cloud API (Meta)",
     environment: envStatus,
     schoolConfig,
     metrics: {
@@ -87,18 +92,21 @@ export async function GET() {
       messagesInitiated: messageStats?.totalMessages || 0,
       messagesSent: messageStats?.sent || 0,
       messagesDelivered: (messageStats?.delivered || 0) + (messageStats?.read || 0),
+      messagesRead: messageStats?.read || 0,
       messagesFailed: messageStats?.failed || 0,
       messagesQueued: messageStats?.queued || 0,
     },
-    workflows: [
-      { id: "att", name: "Workflow A – Attendance Notification", trigger: "attendance.marked", active: true },
-      { id: "fee_rem", name: "Workflow B – Fee Reminder", trigger: "fee.reminder", active: true },
-      { id: "pay_conf", name: "Workflow C – Payment Confirmation", trigger: "fee.payment_received", active: true },
-      { id: "exam_res", name: "Workflow D – Examination Results", trigger: "examination.published", active: true },
-      { id: "hw", name: "Workflow E – Homework Notification", trigger: "homework.published", active: true },
-      { id: "ann", name: "Workflow F – School Announcements", trigger: "announcement.published", active: true },
-      { id: "leave", name: "Workflow G – Leave Notification", trigger: "leave.status_updated", active: true },
-      { id: "tt", name: "Workflow H – Timetable Notification", trigger: "timetable.updated", active: true },
+    communicationModules: [
+      { id: "attendance", name: "Attendance & Absence Alert", trigger: "attendance.marked", active: true },
+      { id: "fee_reminder", name: "Fee Overdue Reminder", trigger: "fee.reminder", active: true },
+      { id: "fee_payment", name: "Fee Payment Confirmation Receipt", trigger: "fee.payment_received", active: true },
+      { id: "exam_announcement", name: "Examination Schedule Announcement", trigger: "examination.published", active: true },
+      { id: "exam_results", name: "Examination Results & Report Card", trigger: "examination.results", active: true },
+      { id: "homework", name: "Homework & Class Assignments", trigger: "homework.published", active: true },
+      { id: "announcements", name: "School Notices & Holiday Circulars", trigger: "announcement.published", active: true },
+      { id: "leave", name: "Student Leave Status Decision", trigger: "leave.status_updated", active: true },
+      { id: "timetable", name: "Class Timetable Updates", trigger: "timetable.updated", active: true },
+      { id: "custom", name: "General Authorized Communication", trigger: "manual.custom_message", active: true },
     ],
   });
 }

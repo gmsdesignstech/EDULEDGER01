@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { signWebhookPayload, verifyWebhookSignature } from "../src/lib/whatsapp-n8n";
+import { createHmac } from "node:crypto";
+import { verifyWhatsappSignature } from "../src/lib/whatsapp-cloud";
 import {
   normalizeWhatsAppNumber,
   maskWhatsAppNumber,
@@ -60,27 +61,23 @@ describe("EduLedger WhatsApp End-to-End Lifecycle & Security Simulation", () => 
     expect(key1).not.toBe(keyDiffStudent);
   });
 
-  // --- 3. Outbound Webhook Signing & Freshness (n8n Dispatch) ---
-  it("Phase C: signs outbound webhook and validates 5-minute replay drift window", () => {
+  // --- 3. Direct WhatsApp Cloud Webhook Signature & Tamper Resistance ---
+  it("Phase C: validates direct WhatsApp Cloud webhook HMAC-SHA256 signature and tamper resistance", () => {
     const payload = JSON.stringify({
-      eventId: "evt_999",
-      eventType: "attendance.marked",
-      studentId: "std_101",
+      object: "whatsapp_business_account",
+      entry: [{ id: "waba_101" }],
     });
 
-    const now = Date.now();
-    const validTimestamp = now.toString();
-    const signature = signWebhookPayload(`${validTimestamp}.${payload}`, secretKey);
+    const validSig = "sha256=" + createHmac("sha256", secretKey).update(payload, "utf8").digest("hex");
 
-    // Recent timestamp passes
-    expect(verifyWebhookSignature(payload, signature, validTimestamp, [secretKey])).toBe(true);
-
-    // Stale timestamp (> 5 mins) rejected
-    const staleTimestamp = (now - 6 * 60 * 1000).toString();
-    expect(verifyWebhookSignature(payload, signature, staleTimestamp, [secretKey])).toBe(false);
+    // Valid signature passes
+    expect(verifyWhatsappSignature(payload, validSig, secretKey)).toBe(true);
 
     // Tampered payload rejected
-    expect(verifyWebhookSignature(payload + "tampered", signature, validTimestamp, [secretKey])).toBe(false);
+    expect(verifyWhatsappSignature(payload + "tampered", validSig, secretKey)).toBe(false);
+
+    // Invalid secret rejected
+    expect(verifyWhatsappSignature(payload, validSig, "wrong_secret_key")).toBe(false);
   });
 
   // --- 4. Inbound Meta Webhook Challenge & Signature ---

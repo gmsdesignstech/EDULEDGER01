@@ -48,7 +48,7 @@ export type MetaTemplateRequest={to:string;templateName:string;language:string;p
 export type WhatsAppProviderCredentials={phoneNumberId:string;businessAccountId:string;accessToken:string;graphVersion:string};
 type InstitutionProviderEntry=WhatsAppProviderCredentials&{provider?:"meta_cloud";senderNumber:string;verified:boolean};
 export type MetaTemplateSummary={id:string;name:string;language:string;status:string;category:string};
-export type WhatsAppProviderKind="meta_cloud"|"twilio"|"360dialog";
+export type WhatsAppProviderKind="meta_cloud";
 export interface WhatsAppProvider{kind:WhatsAppProviderKind;sendTemplate(input:MetaTemplateRequest,credentials:WhatsAppProviderCredentials):Promise<{id:string}>;sendDocument(input:{to:string;url:string;filename:string},credentials:WhatsAppProviderCredentials):Promise<{id:string}>}
 export type ProviderFailureKind="permanent"|"retryable"|"uncertain";
 export class WhatsAppProviderError extends Error{constructor(message:string,public readonly kind:ProviderFailureKind,public readonly status?:number,public readonly providerCode?:string){super(message);this.name="WhatsAppProviderError"}}

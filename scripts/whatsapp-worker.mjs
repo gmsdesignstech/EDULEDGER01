@@ -69,7 +69,6 @@ if (!configValidation.valid) {
 
 const WHATSAPP_DISPATCH_ENABLED = process.env.WHATSAPP_DISPATCH_ENABLED?.trim() === "1";
 const WHATSAPP_ENABLED = process.env.WHATSAPP_ENABLED === "true";
-const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL?.trim() || "";
 const pollIntervalMs = Math.max(1000, Number(process.env.WHATSAPP_WORKER_POLL_INTERVAL_MS) || 5000);
 const workerId = `worker_${os.hostname()}_${process.pid}_${Math.random().toString(36).slice(2, 7)}`;
 
@@ -156,7 +155,7 @@ async function runCheck() {
   console.log(`- Database target: ${rawUrl.replace(/:\/\/[^@]+@/, "://***@")}`);
   console.log(`- WhatsApp Enabled: ${WHATSAPP_ENABLED}`);
   console.log(`- Dispatch Enabled: ${WHATSAPP_DISPATCH_ENABLED}`);
-  console.log(`- n8n Webhook: ${N8N_WEBHOOK_URL || "Not configured (Direct/Local dispatch)"}`);
+  console.log(`- Provider: Direct WhatsApp Cloud API (Meta)`);
 
   try {
     const [result] = await sql`SELECT 1 AS connected, NOW() AS server_time`;
