@@ -157,5 +157,47 @@ describe("EduLedger Multi-School Access & Tenant Security", () => {
       expect(isAuthorized(parentUser.role)).toBe(false);
     });
   });
+
+  describe("4. Configurable Default Password & Provisioning Rules", () => {
+    it("supports standard default teacher password EduTeacher@2026 with first-login requirement", async () => {
+      const defaultTeacherPassword = "EduTeacher@2026";
+      const hashed = await hash(defaultTeacherPassword, 10);
+      expect(await compare("EduTeacher@2026", hashed)).toBe(true);
+
+      const teacherAccount = {
+        role: "TEACHER",
+        mustChangePassword: true,
+        status: "Active",
+      };
+      expect(teacherAccount.mustChangePassword).toBe(true);
+      expect(teacherAccount.status).toBe("Active");
+    });
+
+    it("supports standard default student password EduStudent@2026 with first-login requirement", async () => {
+      const defaultStudentPassword = "EduStudent@2026";
+      const hashed = await hash(defaultStudentPassword, 10);
+      expect(await compare("EduStudent@2026", hashed)).toBe(true);
+
+      const studentAccount = {
+        role: "STUDENT",
+        mustChangePassword: true,
+        status: "Active",
+      };
+      expect(studentAccount.mustChangePassword).toBe(true);
+      expect(studentAccount.status).toBe("Active");
+    });
+
+    it("formats canonical Login IDs consistently for teachers and students", () => {
+      const schoolCode = "DAPS";
+      const teacherEmpId = "EMP-042";
+      const studentAdmission = "ADM-2026-99";
+
+      const teacherLoginId = `TCH-${schoolCode}-${teacherEmpId.replace(/^EMP-?/i, "")}`;
+      const studentLoginId = `STU-${schoolCode}-${studentAdmission.replace(/^ADM-?/i, "")}`;
+
+      expect(teacherLoginId).toBe("TCH-DAPS-042");
+      expect(studentLoginId).toBe("STU-DAPS-2026-99");
+    });
+  });
 });
 

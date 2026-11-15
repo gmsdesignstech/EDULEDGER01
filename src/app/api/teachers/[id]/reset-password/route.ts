@@ -36,7 +36,11 @@ export async function POST(
     const schoolCode = settings.schoolCode || school.name.replace(/[^A-Za-z0-9]/g, "").slice(0, 4).toUpperCase();
     const loginId = teacher.loginId || formatTeacherLoginId(schoolCode, teacher.employeeId);
 
-    const temporaryPassword = generateSecureTemporaryPassword();
+    const raw = await request.json().catch(() => null);
+    const mode = raw?.mode || school.teacherPasswordMode;
+    const temporaryPassword = mode === "UNIQUE"
+      ? generateSecureTemporaryPassword()
+      : (school.defaultTeacherPassword || "EduTeacher@2026");
     const passwordHash = await hash(temporaryPassword, 10);
 
     // Ensure teacher record has loginId and is active

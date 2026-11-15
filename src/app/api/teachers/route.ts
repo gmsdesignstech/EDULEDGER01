@@ -103,7 +103,11 @@ export async function POST(request: Request) {
 
     let temporaryPassword = "";
     const plainPassword =
-      parsed.data.password || (temporaryPassword = generateSecureTemporaryPassword());
+      parsed.data.password ||
+      (temporaryPassword =
+        school.teacherPasswordMode === "UNIQUE"
+          ? generateSecureTemporaryPassword()
+          : school.defaultTeacherPassword || "EduTeacher@2026");
     const passwordHash = await hash(plainPassword, 10);
     const mustChangePassword = !parsed.data.password;
 

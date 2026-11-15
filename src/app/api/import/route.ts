@@ -23,7 +23,7 @@ import {
   upsertTeacherAccount,
   type StudentInput,
 } from "@/lib/db";
-import { generateSecureTemporaryPassword } from "@/lib/account-provisioning";
+import { generateSecureTemporaryPassword, auditAndRepairStudentCredentials } from "@/lib/account-provisioning";
 import { hash } from "bcryptjs";
 import { currentUser } from "@/lib/session";
 import { explainCapacityError } from "@/lib/subscription-access";
@@ -226,7 +226,13 @@ async function importRecords(request: Request) {
   }
   let imported = 0;
   if(type==="students"&&valid.length){
-    try{await addStudentsAtomic(user.institutionId,valid.map(row=>studentInput(row,defaultAcademicYear)),user.id,{allowImportedRoll:true,enforceCapacity:true});imported=valid.length}
+    try{
+      await addStudentsAtomic(user.institutionId,valid.map(row=>studentInput(row,defaultAcademicYear)),user.id,{allowImportedRoll:true,enforceCapacity:true});
+      imported=valid.length;
+      auditAndRepairStudentCredentials(user.institutionId, { includePendingPasswords: true }).catch((err) => {
+        console.warn("Auto-provisioning imported students warning:", err);
+      });
+    }
     catch(batchError){
       logServerError("import.student-batch",batchError,{requestId,institutionId:user.institutionId,rowOffset,rows:valid.length});
       const duplicate=batchError instanceof Error&&/unique|duplicate|already exists/i.test(batchError.message);
@@ -255,7 +261,10 @@ async function importRecords(request: Request) {
           user.id,
         );
 
-        const tempPassword = generateSecureTemporaryPassword();
+        const instSettings = await getInstitution(user.institutionId);
+        const tempPassword = instSettings.teacherPasswordMode === "UNIQUE"
+          ? generateSecureTemporaryPassword()
+          : (instSettings.defaultTeacherPassword || "EduTeacher@2026");
         const passwordHash = await hash(tempPassword, 10);
 
         await upsertTeacherAccount(user.institutionId, {

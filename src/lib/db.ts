@@ -41,6 +41,7 @@ export type DbStudent = {
   id: string;
   name: string;
   admission: string;
+  loginId?: string;
   gender: string;
   photoPath: string;
   bloodGroup: string;
@@ -1398,7 +1399,7 @@ export async function updateUserPassword(
   });
 }
 
-const studentSelect = `SELECT s.id,s.name,s.admission,s.gender,COALESCE(s.photo_path,'') AS "photoPath",COALESCE(s.blood_group,'') AS "bloodGroup",COALESCE(s.mother_name,'') AS "motherName",COALESCE(s.special_quota,'') AS "specialQuota",COALESCE(s.special_quota_description,'') AS "specialQuotaDescription",s.date_of_birth AS "dateOfBirth",s.class_name AS "className",s.section,s.grade,s.roll_number AS "rollNumber",s.parent,s.parent_phone AS "parentPhone",s.whatsapp_enabled AS "whatsappEnabled",s.whatsapp_attendance AS "whatsappAttendance",s.whatsapp_academics AS "whatsappAcademics",s.whatsapp_fees AS "whatsappFees",s.whatsapp_notices AS "whatsappNotices",s.whatsapp_general AS "whatsappGeneral",s.parent_email AS "parentEmail",s.address,s.admission_date AS "admissionDate",s.attendance,s.fee,s.total_fee AS "totalFee",s.paid_fee AS "paidFee",s.pending_fee AS "pendingFee",s.status,s.academic_year AS "academicYear",COALESCE(s.leaving_date,'') AS "leavingDate",COALESCE(s.leaving_reason,'') AS "leavingReason",COALESCE(s.leaving_remarks,'') AS "leavingRemarks",s.created_at::text AS "createdAt" FROM students s`;
+const studentSelect = `SELECT s.id,s.name,s.admission,COALESCE(s.login_id,'') AS "loginId",s.gender,COALESCE(s.photo_path,'') AS "photoPath",COALESCE(s.blood_group,'') AS "bloodGroup",COALESCE(s.mother_name,'') AS "motherName",COALESCE(s.special_quota,'') AS "specialQuota",COALESCE(s.special_quota_description,'') AS "specialQuotaDescription",s.date_of_birth AS "dateOfBirth",s.class_name AS "className",s.section,s.grade,s.roll_number AS "rollNumber",s.parent,s.parent_phone AS "parentPhone",s.whatsapp_enabled AS "whatsappEnabled",s.whatsapp_attendance AS "whatsappAttendance",s.whatsapp_academics AS "whatsappAcademics",s.whatsapp_fees AS "whatsappFees",s.whatsapp_notices AS "whatsappNotices",s.whatsapp_general AS "whatsappGeneral",s.parent_email AS "parentEmail",s.address,s.admission_date AS "admissionDate",s.attendance,s.fee,s.total_fee AS "totalFee",s.paid_fee AS "paidFee",s.pending_fee AS "pendingFee",s.status,s.academic_year AS "academicYear",COALESCE(s.leaving_date,'') AS "leavingDate",COALESCE(s.leaving_reason,'') AS "leavingReason",COALESCE(s.leaving_remarks,'') AS "leavingRemarks",s.created_at::text AS "createdAt" FROM students s`;
 async function refreshFees(institutionId: string, sql?: Sql) {
   const db = sql ?? (await ready()),
     today = new Date().toISOString().slice(0, 10);
@@ -1675,6 +1676,11 @@ export async function deleteStudent(
     [id, institutionId],
     db,
   );
+  await run(
+    "UPDATE users SET status = 'Inactive', updated_at = CURRENT_TIMESTAMP WHERE institution_id = ? AND id IN (SELECT parent_user_id FROM parent_students WHERE student_id = ?)",
+    [institutionId, id],
+    db,
+  ).catch(() => null);
   await audit(
     institutionId,
     userId,
@@ -2930,10 +2936,29 @@ export async function deleteSchoolHoliday(institutionId: string, userId: string,
 
 export async function changeStudentStatus(institutionId:string,id:string,userId:string,input:{status:"Active"|"Inactive"|"Left Out"|"Transferred"|"Graduated"|"Archived";leavingDate?:string;reason?:string;remarks?:string}){
   const student=await getStudent(institutionId,id);if(!student)throw new Error("Student not found");
-  if(student.status===input.status)throw new Error(`Student is already ${input.status}.`);
-  if(input.status!=="Active"&&(!input.leavingDate||!input.reason?.trim()))throw new Error("Leaving date and reason are required.");
-  if(input.status==="Active"&&student.status!=="Active")await assertStudentCapacity(institutionId,1);
-  await connection().begin(async tx=>{await run("UPDATE students SET status=?,leaving_date=?,leaving_reason=?,leaving_remarks=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND institution_id=?",[input.status,input.status==="Active"?null:input.leavingDate||null,input.status==="Active"?"":input.reason?.trim()||"",input.status==="Active"?"":input.remarks?.trim()||"",id,institutionId],tx);if(input.status==="Active")await run("UPDATE student_enrollments SET status='Active',updated_at=CURRENT_TIMESTAMP WHERE institution_id=? AND student_id=? AND academic_year=?",[institutionId,id,student.academicYear],tx);else await run("UPDATE student_enrollments SET status=?,updated_at=CURRENT_TIMESTAMP WHERE institution_id=? AND student_id=? AND academic_year=? AND status='Active'",[input.status,institutionId,id,student.academicYear],tx);await audit(institutionId,userId,input.status==="Active"?"Student Reactivated":input.status==="Graduated"?"Student Graduated":input.status==="Transferred"?"Student Transferred Out":"Student Withdrawn","Student",id,{oldStatus:student.status,newStatus:input.status,effectiveDate:input.leavingDate,reason:input.reason,remarks:input.remarks,outstandingFee:student.pendingFee},tx)});
+  if (student.status === input.status) throw new Error(`Student is already ${input.status}.`);
+  if (input.status !== "Active" && (!input.leavingDate || !input.reason?.trim()))
+    throw new Error("Leaving date and reason are required.");
+  if (input.status === "Active" && student.status !== "Active")
+    await assertStudentCapacity(institutionId, 1);
+  const portalUserStatus = input.status === "Active" ? "Active" : "Inactive";
+  await connection().begin(async (tx) => {
+    await run(
+      "UPDATE students SET status=?,leaving_date=?,leaving_reason=?,leaving_remarks=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND institution_id=?",
+      [input.status, input.status === "Active" ? null : input.leavingDate || null, input.status === "Active" ? "" : input.reason?.trim() || "", input.status === "Active" ? "" : input.remarks?.trim() || "", id, institutionId],
+      tx,
+    );
+    if (input.status === "Active")
+      await run("UPDATE student_enrollments SET status='Active',updated_at=CURRENT_TIMESTAMP WHERE institution_id=? AND student_id=? AND academic_year=?", [institutionId, id, student.academicYear], tx);
+    else
+      await run("UPDATE student_enrollments SET status=?,updated_at=CURRENT_TIMESTAMP WHERE institution_id=? AND student_id=? AND academic_year=? AND status='Active'", [input.status, institutionId, id, student.academicYear], tx);
+    await run(
+      "UPDATE users SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE institution_id = ? AND id IN (SELECT parent_user_id FROM parent_students WHERE student_id = ?)",
+      [portalUserStatus, institutionId, id],
+      tx,
+    ).catch(() => null);
+    await audit(institutionId, userId, input.status === "Active" ? "Student Reactivated" : input.status === "Graduated" ? "Student Graduated" : input.status === "Transferred" ? "Student Transferred Out" : "Student Withdrawn", "Student", id, { oldStatus: student.status, newStatus: input.status, effectiveDate: input.leavingDate, reason: input.reason, remarks: input.remarks, outstandingFee: student.pendingFee }, tx);
+  });
   return (await getStudent(institutionId,id))!;
 }
 export async function createFee(

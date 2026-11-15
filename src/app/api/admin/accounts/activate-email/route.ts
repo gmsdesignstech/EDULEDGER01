@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { currentUser } from "@/lib/session";
-import { queryRow } from "@/lib/db";
+import { queryRow, queryRows } from "@/lib/db";
 import { sendAccountActivationEmail } from "@/lib/email";
 import { logServerError } from "@/lib/server-errors";
 
@@ -14,8 +14,8 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json().catch(() => null);
-    if (!body || !body.targetType || !body.targetId) {
-      return NextResponse.json({ error: "Missing required parameters." }, { status: 400 });
+    if (!body || !body.targetType) {
+      return NextResponse.json({ error: "Missing targetType parameter." }, { status: 400 });
     }
 
     const { targetType, targetId, temporaryPassword } = body;
@@ -28,6 +28,9 @@ export async function POST(request: Request) {
     const institutionName = institution?.name || "EduLedger Institution";
 
     if (targetType === "TEACHER") {
+      if (!targetId) {
+        return NextResponse.json({ error: "Missing targetId." }, { status: 400 });
+      }
       const teacher = await queryRow<{
         id: string;
         name: string;
@@ -63,6 +66,9 @@ export async function POST(request: Request) {
 
       return NextResponse.json({ success: true, emailResult });
     } else if (targetType === "STUDENT") {
+      if (!targetId) {
+        return NextResponse.json({ error: "Missing targetId." }, { status: 400 });
+      }
       const student = await queryRow<{
         id: string;
         name: string;
@@ -97,6 +103,72 @@ export async function POST(request: Request) {
       });
 
       return NextResponse.json({ success: true, emailResult });
+    } else if (targetType === "BULK_TEACHERS") {
+      const teachers = await queryRows<{
+        id: string;
+        name: string;
+        email: string;
+        employee_id: string;
+        login_id: string;
+      }>(
+        `SELECT id, name, email, employee_id, COALESCE(login_id, '') as login_id
+         FROM teachers
+         WHERE institution_id = ? AND email <> '' AND status <> 'Deleted'`,
+        [institutionId]
+      );
+
+      let sentCount = 0;
+      for (const t of teachers.slice(0, 100)) {
+        await sendAccountActivationEmail({
+          to: t.email,
+          name: t.name,
+          role: "TEACHER",
+          institutionName,
+          loginId: t.login_id || t.employee_id || t.email,
+          loginUrl: "https://eduledger.co.in/teacher/login",
+        }).catch(() => null);
+        sentCount++;
+      }
+
+      return NextResponse.json({
+        success: true,
+        sent: sentCount,
+        total: teachers.length,
+        message: `Dispatched activation emails to ${sentCount} faculty members.`,
+      });
+    } else if (targetType === "BULK_STUDENTS") {
+      const students = await queryRows<{
+        id: string;
+        name: string;
+        admission: string;
+        parent_email: string;
+        login_id: string;
+      }>(
+        `SELECT id, name, admission, parent_email, COALESCE(login_id, '') as login_id
+         FROM students
+         WHERE institution_id = ? AND parent_email <> '' AND status <> 'Deleted'`,
+        [institutionId]
+      );
+
+      let sentCount = 0;
+      for (const s of students.slice(0, 100)) {
+        await sendAccountActivationEmail({
+          to: s.parent_email,
+          name: s.name,
+          role: "STUDENT",
+          institutionName,
+          loginId: s.login_id || s.admission || s.parent_email,
+          loginUrl: "https://eduledger.co.in/student/login",
+        }).catch(() => null);
+        sentCount++;
+      }
+
+      return NextResponse.json({
+        success: true,
+        sent: sentCount,
+        total: students.length,
+        message: `Dispatched activation emails to ${sentCount} student/parent contacts.`,
+      });
     }
 
     return NextResponse.json({ error: "Invalid target type" }, { status: 400 });
