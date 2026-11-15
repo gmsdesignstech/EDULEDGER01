@@ -166,14 +166,20 @@ export async function auditAndRepairTeacherCredentials(
     `SELECT id, name FROM institutions WHERE id = ?`,
     [institutionId]
   );
-  const settings = await queryRow<{
+  type TeacherSettingsRow = {
     school_code?: string;
     default_teacher_password?: string;
     teacher_password_mode?: "COMMON" | "UNIQUE";
-  }>(
+  };
+  const settings = await queryRow<TeacherSettingsRow>(
     `SELECT school_code, COALESCE(default_teacher_password, 'EduTeacher@2026') as default_teacher_password, COALESCE(teacher_password_mode, 'COMMON') as teacher_password_mode FROM settings WHERE institution_id = ?`,
     [institutionId]
-  );
+  ).catch(async () => {
+    return await queryRow<TeacherSettingsRow>(
+      `SELECT school_code FROM settings WHERE institution_id = ?`,
+      [institutionId]
+    );
+  });
 
   const schoolName = school?.name || "School";
   const schoolCode = settings?.school_code || schoolName.replace(/[^A-Za-z0-9]/g, "").slice(0, 4).toUpperCase();
@@ -459,14 +465,20 @@ export async function auditAndRepairStudentCredentials(
     `SELECT id, name FROM institutions WHERE id = ?`,
     [institutionId]
   );
-  const settings = await queryRow<{
+  type StudentSettingsRow = {
     school_code?: string;
     default_student_password?: string;
     student_password_mode?: "COMMON" | "UNIQUE";
-  }>(
+  };
+  const settings = await queryRow<StudentSettingsRow>(
     `SELECT school_code, COALESCE(default_student_password, 'EduStudent@2026') as default_student_password, COALESCE(student_password_mode, 'COMMON') as student_password_mode FROM settings WHERE institution_id = ?`,
     [institutionId]
-  );
+  ).catch(async () => {
+    return await queryRow<StudentSettingsRow>(
+      `SELECT school_code FROM settings WHERE institution_id = ?`,
+      [institutionId]
+    );
+  });
 
   const schoolName = school?.name || "School";
   const schoolCode = settings?.school_code || schoolName.replace(/[^A-Za-z0-9]/g, "").slice(0, 4).toUpperCase();
@@ -737,7 +749,7 @@ export async function synchronizeAllInstitutionAccounts(
   await queryRun(
     `UPDATE settings SET accounts_last_synced_at = CURRENT_TIMESTAMP WHERE institution_id = ?`,
     [institutionId]
-  );
+  ).catch(() => 0);
 
   const settings = await queryRow<{
     default_teacher_password?: string;
@@ -748,7 +760,7 @@ export async function synchronizeAllInstitutionAccounts(
   }>(
     `SELECT default_teacher_password, default_student_password, teacher_password_mode, student_password_mode, accounts_last_synced_at::text FROM settings WHERE institution_id = ?`,
     [institutionId]
-  );
+  ).catch(() => undefined);
 
   return {
     success: true,

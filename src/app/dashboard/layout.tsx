@@ -15,14 +15,16 @@ export default async function Layout({
 }) {
   const user = await requireUser();
   if(["SUPER_ADMIN","TEACHER","PARENT","STUDENT"].includes(user.role))redirect(roleHome(user.role));
-  const
-    [subscription,institution] = await Promise.all([getSubscription(user.institutionId),getInstitution(user.institutionId)]);
+  const [subscription, institution] = await Promise.all([
+    getSubscription(user.institutionId),
+    getInstitution(user.institutionId),
+  ]);
   return (
     <EduCacheProvider scope={`${user.institutionId}:${user.id}`}>
     <Shell
       user={{ name: user.name, role: user.role }}
-      schoolName={institution.name}
-      academicYear={institution.academicYear}
+      schoolName={institution?.name || "EduLedger"}
+      academicYear={institution?.academicYear || "2026-2027"}
       subscription={subscription}
     >
       <PortalNetworkStatus />

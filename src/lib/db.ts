@@ -574,6 +574,24 @@ export async function ensureEssentialProductionSchema(customDb?: Sql): Promise<v
       ALTER TABLE settings ADD COLUMN IF NOT EXISTS footer_text TEXT NOT NULL DEFAULT '';
       ALTER TABLE settings ADD COLUMN IF NOT EXISTS signature_label TEXT NOT NULL DEFAULT 'Authorized Signatory';
       ALTER TABLE settings ADD COLUMN IF NOT EXISTS attendance_correction_window_hours INTEGER NOT NULL DEFAULT 24;
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS default_teacher_password TEXT NOT NULL DEFAULT 'EduTeacher@2026';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS default_student_password TEXT NOT NULL DEFAULT 'EduStudent@2026';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS teacher_password_mode TEXT NOT NULL DEFAULT 'COMMON';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS student_password_mode TEXT NOT NULL DEFAULT 'COMMON';
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS accounts_last_synced_at TIMESTAMPTZ;
+
+      -- Institutions table columns
+      ALTER TABLE institutions ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'Active';
+      ALTER TABLE institutions ADD COLUMN IF NOT EXISTS institution_type TEXT NOT NULL DEFAULT 'School';
+      ALTER TABLE institutions ADD COLUMN IF NOT EXISTS planned_student_count INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE institutions ADD COLUMN IF NOT EXISTS subscription_start_date TIMESTAMPTZ;
+      ALTER TABLE institutions ADD COLUMN IF NOT EXISTS subscription_end_date TIMESTAMPTZ;
+
+      -- Subscriptions table columns
+      ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS price_per_student NUMERIC(12,2) NOT NULL DEFAULT 0;
+      ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS student_count_at_purchase INTEGER;
+      ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS pricing_model TEXT NOT NULL DEFAULT 'PER_STUDENT';
+      ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS plan_version INTEGER NOT NULL DEFAULT 1;
 
       -- Students table columns
       ALTER TABLE students ADD COLUMN IF NOT EXISTS photo_path TEXT;
@@ -588,15 +606,19 @@ export async function ensureEssentialProductionSchema(customDb?: Sql): Promise<v
       ALTER TABLE students ADD COLUMN IF NOT EXISTS leaving_remarks TEXT NOT NULL DEFAULT '';
       ALTER TABLE students ADD COLUMN IF NOT EXISTS parent_whatsapp TEXT NOT NULL DEFAULT '';
       ALTER TABLE students ADD COLUMN IF NOT EXISTS parent_relationship TEXT NOT NULL DEFAULT '';
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS login_id TEXT NOT NULL DEFAULT '';
+      CREATE INDEX IF NOT EXISTS idx_students_login_id ON students(LOWER(login_id)) WHERE login_id <> '';
+
+      -- Teachers table columns
+      ALTER TABLE teachers ADD COLUMN IF NOT EXISTS login_id TEXT NOT NULL DEFAULT '';
+      CREATE INDEX IF NOT EXISTS idx_teachers_login_id ON teachers(LOWER(login_id)) WHERE login_id <> '';
 
       -- User status and login audit
       ALTER TABLE users ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'Active';
       ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS login_id TEXT;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE;
-      ALTER TABLE teachers ADD COLUMN IF NOT EXISTS login_id TEXT NOT NULL DEFAULT '';
       CREATE INDEX IF NOT EXISTS idx_users_login_id ON users(LOWER(login_id)) WHERE login_id IS NOT NULL;
-      CREATE INDEX IF NOT EXISTS idx_teachers_login_id ON teachers(LOWER(login_id)) WHERE login_id <> '';
 
       -- Essential authentication and notification tables
       CREATE TABLE IF NOT EXISTS parent_students(
@@ -698,14 +720,14 @@ export async function ensureTimetableSchema(customDb?: Sql): Promise<void> {
 
 async function ready() {
   const sql = connection();
-  // Production schema changes are applied explicitly before deployment. Running
-  // the full idempotent bootstrap in every new serverless instance adds tens of
-  // seconds to cold requests and creates unnecessary DDL contention.
   if (process.env.NODE_ENV !== "production") {
     await initialize();
   } else {
-    // Non-blocking background check so essential schema self-heals without delaying production cold requests
-    ensureEssentialProductionSchema(sql).catch(() => {});
+    try {
+      await ensureEssentialProductionSchema(sql);
+    } catch (err) {
+      console.warn("ensureEssentialProductionSchema warning:", err);
+    }
   }
   return sql;
 }
@@ -889,29 +911,93 @@ export async function generateMissingStudentIds(institutionId:string,userId:stri
 }
 
 export async function getInstitution(institutionId: string) {
-  return await row<{
-    id: string;
-    name: string;
-    address: string;
-    phone: string;
-    email: string;
-    logoUrl: string;
-    academicYear: string;
-    schoolCode: string;
-    diseCode: string; website: string; city: string; state: string; pinCode: string;
-    principalName: string; registrationNumber: string; affiliation: string; motto: string; schoolType: string;
-    feeReceiptTitle: string; feeReceiptSubheader: string; payslipTitle: string; payslipSubheader: string; footerText: string; signatureLabel: string;
-    institutionType: string;
-    defaultTeacherPassword: string;
-    defaultStudentPassword: string;
-    teacherPasswordMode: "COMMON" | "UNIQUE";
-    studentPasswordMode: "COMMON" | "UNIQUE";
-    accountsLastSyncedAt?: string | null;
-  }>(
-    `SELECT i.id,i.name,COALESCE(i.institution_type,'School') AS "institutionType",COALESCE(s.school_address,'') address,COALESCE(s.school_phone,'') phone,COALESCE(s.school_email,'') email,COALESCE(s.logo_url,'') AS "logoUrl",COALESCE(s.academic_year,'2026-2027') AS "academicYear",COALESCE(s.school_code,'') AS "schoolCode",COALESCE(s.dise_code,'') AS "diseCode",COALESCE(s.website,'') website,COALESCE(s.city,'') city,COALESCE(s.state,'') state,COALESCE(s.pin_code,'') AS "pinCode",COALESCE(s.principal_name,'') AS "principalName",COALESCE(s.registration_number,'') AS "registrationNumber",COALESCE(s.affiliation,'') affiliation,COALESCE(s.motto,'') motto,COALESCE(s.school_type,'') AS "schoolType",COALESCE(s.fee_receipt_title,'Fee Payment Receipt') AS "feeReceiptTitle",COALESCE(s.fee_receipt_subheader,'Standard Fee Receipt Template') AS "feeReceiptSubheader",COALESCE(s.payslip_title,'Pay Slip') AS "payslipTitle",COALESCE(s.payslip_subheader,'Standard Pay Slip Template') AS "payslipSubheader",COALESCE(s.footer_text,'') AS "footerText",COALESCE(s.signature_label,'Authorized Signatory') AS "signatureLabel",COALESCE(s.default_teacher_password,'EduTeacher@2026') AS "defaultTeacherPassword",COALESCE(s.default_student_password,'EduStudent@2026') AS "defaultStudentPassword",COALESCE(s.teacher_password_mode,'COMMON') AS "teacherPasswordMode",COALESCE(s.student_password_mode,'COMMON') AS "studentPasswordMode",s.accounts_last_synced_at::text AS "accountsLastSyncedAt" FROM institutions i LEFT JOIN settings s ON s.institution_id=i.id WHERE i.id=?`,
-    [institutionId],
-    await ready(),
-  );
+  try {
+    const db = await ready();
+    const item = await row<{
+      id: string;
+      name: string;
+      address: string;
+      phone: string;
+      email: string;
+      logoUrl: string;
+      academicYear: string;
+      schoolCode: string;
+      diseCode: string; website: string; city: string; state: string; pinCode: string;
+      principalName: string; registrationNumber: string; affiliation: string; motto: string; schoolType: string;
+      feeReceiptTitle: string; feeReceiptSubheader: string; payslipTitle: string; payslipSubheader: string; footerText: string; signatureLabel: string;
+      institutionType: string;
+      defaultTeacherPassword: string;
+      defaultStudentPassword: string;
+      teacherPasswordMode: "COMMON" | "UNIQUE";
+      studentPasswordMode: "COMMON" | "UNIQUE";
+      accountsLastSyncedAt?: string | null;
+    }>(
+      `SELECT i.id,i.name,COALESCE(i.institution_type,'School') AS "institutionType",COALESCE(s.school_address,'') address,COALESCE(s.school_phone,'') phone,COALESCE(s.school_email,'') email,COALESCE(s.logo_url,'') AS "logoUrl",COALESCE(s.academic_year,'2026-2027') AS "academicYear",COALESCE(s.school_code,'') AS "schoolCode",COALESCE(s.dise_code,'') AS "diseCode",COALESCE(s.website,'') website,COALESCE(s.city,'') city,COALESCE(s.state,'') state,COALESCE(s.pin_code,'') AS "pinCode",COALESCE(s.principal_name,'') AS "principalName",COALESCE(s.registration_number,'') AS "registrationNumber",COALESCE(s.affiliation,'') affiliation,COALESCE(s.motto,'') motto,COALESCE(s.school_type,'') AS "schoolType",COALESCE(s.fee_receipt_title,'Fee Payment Receipt') AS "feeReceiptTitle",COALESCE(s.fee_receipt_subheader,'Standard Fee Receipt Template') AS "feeReceiptSubheader",COALESCE(s.payslip_title,'Pay Slip') AS "payslipTitle",COALESCE(s.payslip_subheader,'Standard Pay Slip Template') AS "payslipSubheader",COALESCE(s.footer_text,'') AS "footerText",COALESCE(s.signature_label,'Authorized Signatory') AS "signatureLabel",COALESCE(s.default_teacher_password,'EduTeacher@2026') AS "defaultTeacherPassword",COALESCE(s.default_student_password,'EduStudent@2026') AS "defaultStudentPassword",COALESCE(s.teacher_password_mode,'COMMON') AS "teacherPasswordMode",COALESCE(s.student_password_mode,'COMMON') AS "studentPasswordMode",s.accounts_last_synced_at::text AS "accountsLastSyncedAt" FROM institutions i LEFT JOIN settings s ON s.institution_id=i.id WHERE i.id=?`,
+      [institutionId],
+      db,
+    );
+    if (item) return item;
+  } catch (err) {
+    console.warn("Primary getInstitution query failed, falling back to base query:", err);
+  }
+
+  try {
+    const db = await ready();
+    const fallback = await row<{
+      id: string;
+      name: string;
+      address: string;
+      phone: string;
+      email: string;
+      logoUrl: string;
+      academicYear: string;
+      schoolCode: string;
+    }>(
+      `SELECT i.id, i.name, COALESCE(s.school_address,'') address, COALESCE(s.school_phone,'') phone, COALESCE(s.school_email,'') email, COALESCE(s.logo_url,'') AS "logoUrl", COALESCE(s.academic_year,'2026-2027') AS "academicYear", COALESCE(s.school_code,'') AS "schoolCode" FROM institutions i LEFT JOIN settings s ON s.institution_id=i.id WHERE i.id=?`,
+      [institutionId],
+      db,
+    );
+    if (fallback) {
+      return {
+        ...fallback,
+        diseCode: "", website: "", city: "", state: "", pinCode: "",
+        principalName: "", registrationNumber: "", affiliation: "", motto: "", schoolType: "",
+        feeReceiptTitle: "Fee Payment Receipt", feeReceiptSubheader: "Standard Fee Receipt Template",
+        payslipTitle: "Pay Slip", payslipSubheader: "Standard Pay Slip Template",
+        footerText: "", signatureLabel: "Authorized Signatory",
+        institutionType: "School",
+        defaultTeacherPassword: "EduTeacher@2026",
+        defaultStudentPassword: "EduStudent@2026",
+        teacherPasswordMode: "COMMON" as const,
+        studentPasswordMode: "COMMON" as const,
+        accountsLastSyncedAt: null,
+      };
+    }
+  } catch (fallbackErr) {
+    console.warn("Fallback getInstitution query failed:", fallbackErr);
+  }
+
+  return {
+    id: institutionId,
+    name: "EduLedger School",
+    address: "",
+    phone: "",
+    email: "",
+    logoUrl: "",
+    academicYear: "2026-2027",
+    schoolCode: "",
+    diseCode: "", website: "", city: "", state: "", pinCode: "",
+    principalName: "", registrationNumber: "", affiliation: "", motto: "", schoolType: "",
+    feeReceiptTitle: "Fee Payment Receipt", feeReceiptSubheader: "Standard Fee Receipt Template",
+    payslipTitle: "Pay Slip", payslipSubheader: "Standard Pay Slip Template",
+    footerText: "", signatureLabel: "Authorized Signatory",
+    institutionType: "School",
+    defaultTeacherPassword: "EduTeacher@2026",
+    defaultStudentPassword: "EduStudent@2026",
+    teacherPasswordMode: "COMMON" as const,
+    studentPasswordMode: "COMMON" as const,
+    accountsLastSyncedAt: null,
+  };
 }
 export function formatTeacherLoginId(schoolCode: string | undefined, employeeId: string): string {
   const rawEmp = (employeeId || "").trim().toUpperCase().replace(/[^A-Z0-9_-]/g, "");
@@ -3778,64 +3864,95 @@ export async function activateVerifiedWhatsAppAddon(
 export async function getSubscription(
   institutionId: string,
 ): Promise<SubscriptionSummary> {
-  const db = await ready(),
-    item = await row<Omit<SubscriptionSummary, "studentUsage">>(
+  const defaultUnpaid: SubscriptionSummary = {
+    status: "UNPAID",
+    planId: null,
+    planName: null,
+    studentCapacity: null,
+    studentCountAtPurchase: null,
+    pricingModel: "FIXED",
+    planVersion: 1,
+    pricePerStudent: 0,
+    annualAmount: STARTER_ANNUAL_PRICE,
+    amountPaid: 0,
+    activationDate: null,
+    expiryDate: null,
+    razorpayOrderId: null,
+    razorpayPaymentId: null,
+    razorpaySignature: null,
+    studentUsage: 0,
+    billingStudentCount: 0,
+    daysRemaining: 0,
+    daysUntilStart: 0,
+    durationProgress: 0,
+    currency: "INR",
+    paymentStatus: "Unpaid",
+    autoRenew: false,
+  };
+
+  try {
+    const db = await ready();
+    const item = await row<Omit<SubscriptionSummary, "studentUsage">>(
       'SELECT s.status,s.plan_id AS "planId",p.name AS "planName",s.student_capacity AS "studentCapacity",COALESCE(s.student_count_at_purchase,s.student_capacity) AS "studentCountAtPurchase",s.pricing_model AS "pricingModel",s.plan_version AS "planVersion",s.price_per_student AS "pricePerStudent",s.amount_paid AS "amountPaid",s.amount_paid AS "annualAmount",s.activation_date::text AS "activationDate",s.expiry_date::text AS "expiryDate",s.razorpay_order_id AS "razorpayOrderId",s.razorpay_payment_id AS "razorpayPaymentId",s.razorpay_signature AS "razorpaySignature",s.currency,s.payment_status AS "paymentStatus",s.auto_renew AS "autoRenew" FROM subscriptions s JOIN subscription_plans p ON p.id=s.plan_id WHERE s.institution_id=? ORDER BY CASE WHEN s.status IN (\'ACTIVE\',\'EXPIRING_SOON\') AND s.expiry_date>CURRENT_TIMESTAMP THEN 0 ELSE 1 END,s.created_at DESC LIMIT 1',
       [institutionId],
       db,
-    ),
-    usage = (
-      await row<{ count: number }>(
-        "SELECT COUNT(*)::int count FROM students WHERE institution_id=? AND LOWER(TRIM(status))='active'",
-        [institutionId],
-        db,
-      )
-    ).count,
-    institution = await row<{ plannedStudentCount: number;startDate:string|null;endDate:string|null;createdAt:string }>(
+    );
+    const usageRow = await row<{ count: number }>(
+      "SELECT COUNT(*)::int count FROM students WHERE institution_id=? AND LOWER(TRIM(status))='active'",
+      [institutionId],
+      db,
+    ).catch(() => ({ count: 0 }));
+    const usage = usageRow?.count ?? 0;
+
+    const institution = await row<{ plannedStudentCount: number;startDate:string|null;endDate:string|null;createdAt:string }>(
       'SELECT planned_student_count AS "plannedStudentCount",subscription_start_date::text AS "startDate",subscription_end_date::text AS "endDate",created_at::text AS "createdAt" FROM institutions WHERE id=?',
       [institutionId],
       db,
-    ),
-    plannedStudentCount = Number(institution?.plannedStudentCount ?? 0),
-    billingStudentCount = usage > 0 ? usage : plannedStudentCount,
-    purchasePricePerStudent=ANNUAL_PRICE_PER_STUDENT;
-  if (!item) {
-    const starter=starterPlanForStudentCount(billingStudentCount);
+    ).catch(() => undefined);
+
+    const plannedStudentCount = Number(institution?.plannedStudentCount ?? 0);
+    const billingStudentCount = usage > 0 ? usage : plannedStudentCount;
+    const purchasePricePerStudent = ANNUAL_PRICE_PER_STUDENT;
+    if (!item) {
+      const starter = starterPlanForStudentCount(billingStudentCount);
+      return {
+        ...defaultUnpaid,
+        pricingModel: starter ? "FIXED" : "PER_STUDENT",
+        pricePerStudent: starter ? 0 : purchasePricePerStudent,
+        annualAmount: starter ? STARTER_ANNUAL_PRICE : billingStudentCount * purchasePricePerStudent,
+        activationDate: institution?.startDate || null,
+        expiryDate: institution?.endDate || null,
+        studentUsage: usage,
+        billingStudentCount,
+      };
+    }
+    const status = getSubscriptionStatus(item.status, item.expiryDate ?? undefined, new Date(), 30, item.activationDate ?? undefined);
+    if (status !== item.status) {
+      await run(
+        "UPDATE subscriptions SET status=?,updated_at=CURRENT_TIMESTAMP WHERE razorpay_order_id=?",
+        [status, item.razorpayOrderId],
+        db,
+      ).catch(() => {});
+    }
+    const daysRemaining = getDaysRemaining(item.expiryDate ?? undefined);
+    const start = item.activationDate ? new Date(item.activationDate).getTime() : 0;
+    const end = item.expiryDate ? new Date(item.expiryDate).getTime() : 0;
+    const daysUntilStart = start > Date.now() ? Math.ceil((start - Date.now()) / 864e5) : 0;
+    const durationProgress = start && end > start ? Math.max(0, Math.min(100, Math.round((Date.now() - start) / (end - start) * 100))) : 0;
     return {
-      status: "UNPAID",
-      planId: null,
-      planName: null,
-      studentCapacity: null,
-      studentCountAtPurchase: null,
-      pricingModel: starter?"FIXED":"PER_STUDENT",
-      planVersion: 1,
-      pricePerStudent: starter?0:purchasePricePerStudent,
-      annualAmount: starter?STARTER_ANNUAL_PRICE:billingStudentCount*purchasePricePerStudent,
-      amountPaid: 0,
-      activationDate: institution?.startDate||null,
-      expiryDate: institution?.endDate||null,
-      razorpayOrderId: null,
-      razorpayPaymentId: null,
-      razorpaySignature: null,
+      ...item,
+      status,
       studentUsage: usage,
-      billingStudentCount,
-      daysRemaining: 0,
-      daysUntilStart: 0,
-      durationProgress: 0,
-      currency: "INR",
-      paymentStatus: "Unpaid",
-      autoRenew: false,
+      billingStudentCount: usage > 0 ? usage : plannedStudentCount || item.studentCapacity || 0,
+      daysRemaining,
+      daysUntilStart,
+      durationProgress,
+      autoRenew: Boolean(item.autoRenew),
     };
+  } catch (err) {
+    console.error("getSubscription error, returning fallback default:", err);
+    return defaultUnpaid;
   }
-  const status = getSubscriptionStatus(item.status, item.expiryDate ?? undefined,new Date(),30,item.activationDate??undefined);
-  if (status !== item.status)
-    await run(
-      "UPDATE subscriptions SET status=?,updated_at=CURRENT_TIMESTAMP WHERE razorpay_order_id=?",
-      [status, item.razorpayOrderId],
-      db,
-    );
-  const daysRemaining=getDaysRemaining(item.expiryDate??undefined),start=item.activationDate?new Date(item.activationDate).getTime():0,end=item.expiryDate?new Date(item.expiryDate).getTime():0,daysUntilStart=start>Date.now()?Math.ceil((start-Date.now())/864e5):0,durationProgress=start&&end>start?Math.max(0,Math.min(100,Math.round((Date.now()-start)/(end-start)*100))):0;
-  return { ...item, status, studentUsage: usage,billingStudentCount:usage>0?usage:plannedStudentCount||item.studentCapacity||0,daysRemaining,daysUntilStart,durationProgress,autoRenew:Boolean(item.autoRenew) };
 }
 export async function assertStudentCapacity(
   institutionId: string,

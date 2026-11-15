@@ -11,8 +11,15 @@ export const runtime="nodejs";
 const money=(n:number)=>new Intl.NumberFormat("en-IN",{style:"currency",currency:"INR",maximumFractionDigits:0}).format(n);
 const tones={violet:"bg-violet-50 text-violet-700 dark:bg-violet-500/10",blue:"bg-blue-50 text-blue-700 dark:bg-blue-500/10",teal:"bg-teal-50 text-teal-700 dark:bg-teal-500/10",green:"bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10",amber:"bg-amber-50 text-amber-700 dark:bg-amber-500/10",red:"bg-red-50 text-red-700 dark:bg-red-500/10"};
 export default async function Dashboard({searchParams}:{searchParams:Promise<{year?:string}>}){
- const user=await requireUser(),years=await dashboardYears(user.institutionId),requested=(await searchParams).year,year=years.find(x=>x.name===requested)?.name??years.find(x=>x.isActive)?.name??years[0]?.name;
- const[data,classes,subscription]=await Promise.all([year?dashboardData(user.institutionId,year):null,year?listClassSummaries(user.institutionId,year):[],getSubscription(user.institutionId)]);
+ const user=await requireUser();
+ const years=await dashboardYears(user.institutionId).catch(() => []);
+ const requested=(await searchParams).year;
+ const year=years.find(x=>x.name===requested)?.name??years.find(x=>x.isActive)?.name??years[0]?.name;
+ const[data,classes,subscription]=await Promise.all([
+   year?dashboardData(user.institutionId,year).catch(() => null):null,
+   year?listClassSummaries(user.institutionId,year).catch(() => []):[],
+   getSubscription(user.institutionId),
+ ]);
  if(!data)return <Empty text="Add and activate an academic year to use the dashboard." href="/dashboard/settings#academic-years"/>;
  const totalAttendance=data.present+data.absent,attendanceRate=totalAttendance?Math.round(data.present/totalAttendance*100):0,collectionTotal=Number(data.fees.collected)+Number(data.fees.pending),rawRate=collectionTotal>0?Number(data.fees.collected)/collectionTotal*100:0,rate=Number.isFinite(rawRate)?Math.min(100,Math.max(0,rawRate)):0,rateLabel=rate>0&&rate<1?`${rate.toFixed(1)}%`:`${Math.round(rate)}%`,active=classes.filter(x=>x.status==="Active"),today=new Intl.DateTimeFormat("en-IN",{weekday:"long",day:"numeric",month:"long"}).format(new Date());
  const stats=[
