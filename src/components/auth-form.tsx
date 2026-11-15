@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Eye, EyeOff, Loader2, ShieldCheck } from "lucide-react";
 import { Logo } from "./logo";
 import { annualCheckoutHref, schoolAccountDestination, whatsappAddonCheckoutHref } from "@/lib/auth-redirect";
@@ -11,11 +11,29 @@ export function AuthForm({ mode, initialStudentCount = 1, afterSubscriptionHref,
   const [show, setShow] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [institutionType, setInstitutionType] = useState<"School" | "College">("School");
   const today=new Date(),academicStartYear=today.getMonth()>=3?today.getFullYear():today.getFullYear()-1;
   const [periodStart,setPeriodStart]=useState(`${academicStartYear}-04`);
   const [periodEnd,setPeriodEnd]=useState(`${academicStartYear+1}-03`);
   const periodLabel=(value:string)=>value?new Intl.DateTimeFormat("en-IN",{month:"long",year:"numeric",timeZone:"UTC"}).format(new Date(`${value}-01T00:00:00Z`)):"—";
   const annualEnd=(value:string)=>{const match=/^(\d{4})-(\d{2})$/.exec(value);if(!match)return"";const date=new Date(Date.UTC(Number(match[1]),Number(match[2])-1+11,1));return`${date.getUTCFullYear()}-${String(date.getUTCMonth()+1).padStart(2,"0")}`};
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const q = new URLSearchParams(window.location.search);
+      const oauthErr = q.get("error");
+      if (oauthErr === "google_not_configured") {
+        setError("Google Sign-In is not configured for this deployment. Please sign in with your registered email and password.");
+      } else if (oauthErr === "account_not_found") {
+        setError("No EduLedger account found for this Google email. Please register your institution or sign in with your school credentials.");
+      } else if (oauthErr === "account_inactive") {
+        setError("This account is currently inactive. Please contact your institution administrator.");
+      } else if (oauthErr === "google_auth_failed") {
+        setError("Google authentication could not be completed. Please try again or sign in with your password.");
+      }
+    }
+  }, []);
+
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
@@ -40,6 +58,7 @@ export function AuthForm({ mode, initialStudentCount = 1, afterSubscriptionHref,
         body: JSON.stringify({
           name: form.get("name"),
           institution: form.get("institution"),
+          institutionType: mode === "register" ? institutionType : undefined,
           phone: form.get("phone"),
           email: form.get("email"),
           password,
@@ -143,6 +162,33 @@ export function AuthForm({ mode, initialStudentCount = 1, afterSubscriptionHref,
           <form onSubmit={submit} className="mt-8 space-y-4">
             {mode === "register" && (
               <>
+                <label className="block text-sm font-bold text-slate-100">
+                  Institution Type
+                  <div className="mt-2 grid grid-cols-2 gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setInstitutionType("School")}
+                      className={`rounded-xl border py-2.5 text-sm font-bold transition ${
+                        institutionType === "School"
+                          ? "border-emerald-400 bg-emerald-500/15 text-emerald-300"
+                          : "border-slate-700 bg-slate-900 text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      School (K-12)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setInstitutionType("College")}
+                      className={`rounded-xl border py-2.5 text-sm font-bold transition ${
+                        institutionType === "College"
+                          ? "border-emerald-400 bg-emerald-500/15 text-emerald-300"
+                          : "border-slate-700 bg-slate-900 text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      College / University
+                    </button>
+                  </div>
+                </label>
                 <Field
                   name="name"
                   label="Full name"
@@ -151,8 +197,8 @@ export function AuthForm({ mode, initialStudentCount = 1, afterSubscriptionHref,
                 />
                 <Field
                   name="institution"
-                  label="Institution name"
-                  placeholder="Springfield Academy"
+                  label={institutionType === "College" ? "College / University name" : "School name"}
+                  placeholder={institutionType === "College" ? "St. Xavier's College" : "Springfield Academy"}
                   autoComplete="organization"
                 />
                 <Field
@@ -162,10 +208,10 @@ export function AuthForm({ mode, initialStudentCount = 1, afterSubscriptionHref,
                   type="tel"
                   autoComplete="tel"
                 />
-                <Field name="studentCount" label="Expected number of students" placeholder="250" type="number" min={1} max={100000} defaultValue={initialStudentCount} />
+                <Field name="studentCount" label={institutionType === "College" ? "Expected number of students" : "Expected number of students"} placeholder="250" type="number" min={1} max={100000} defaultValue={initialStudentCount} />
                 <fieldset className="rounded-2xl border border-slate-700 bg-slate-900/60 p-4">
-                  <legend className="px-2 text-sm font-black text-emerald-400">School Subscription Period</legend>
-                  <p className="mb-4 text-xs leading-5 text-slate-400">Choose the school&apos;s academic subscription period. It will be locked after successful payment.</p>
+                  <legend className="px-2 text-sm font-black text-emerald-400">{institutionType === "College" ? "College" : "School"} Subscription Period</legend>
+                  <p className="mb-4 text-xs leading-5 text-slate-400">Choose the academic subscription period. It will be locked after successful payment.</p>
                   <div className="grid gap-4 sm:grid-cols-2">
                     <label className="text-sm font-bold text-slate-100">Subscription Start<input required name="subscriptionStartMonth" type="month" min="2000-01" max="2200-12" value={periodStart} onChange={event=>{const start=event.target.value;setPeriodStart(start);setPeriodEnd(annualEnd(start))}} className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 font-normal text-white"/></label>
                     <label className="text-sm font-bold text-slate-100">Subscription End<input required name="subscriptionEndMonth" type="month" min="2000-01" max="2200-12" value={periodEnd} onChange={event=>setPeriodEnd(event.target.value)} className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 font-normal text-white"/></label>
@@ -176,10 +222,26 @@ export function AuthForm({ mode, initialStudentCount = 1, afterSubscriptionHref,
             )}
             <Field
               name="email"
-              label={audience === "parent" ? "Registered Mobile Number or Email" : audience === "teacher" ? "Login ID, Mobile Number or Email" : "Email address"}
-              placeholder={audience === "parent" ? "e.g. 9876543210 or parent@school.edu" : audience === "teacher" ? "e.g. TCH-EMP101, 9876543210, or teacher@school.edu" : "admin@school.edu"}
-              type={audience === "parent" || audience === "teacher" ? "text" : "email"}
-              autoComplete={audience === "parent" || audience === "teacher" ? "username" : "email"}
+              label={
+                audience === "parent"
+                  ? "Registered Mobile Number or Email"
+                  : audience === "teacher"
+                    ? "Faculty ID, Mobile Number or Email"
+                    : audience === "student"
+                      ? "Student ID, Admission No or Email"
+                      : "Email address"
+              }
+              placeholder={
+                audience === "parent"
+                  ? "e.g. 9876543210 or parent@school.edu"
+                  : audience === "teacher"
+                    ? "e.g. TCH-EMP101, 9876543210, or teacher@school.edu"
+                    : audience === "student"
+                      ? "e.g. STU-DPS-001, ADM101, or student@school.edu"
+                      : "admin@school.edu"
+              }
+              type={audience === "parent" || audience === "teacher" || audience === "student" ? "text" : "email"}
+              autoComplete={audience === "parent" || audience === "teacher" || audience === "student" ? "username" : "email"}
             />
             <label className="block text-sm font-bold text-slate-100">
               Password
@@ -271,6 +333,42 @@ export function AuthForm({ mode, initialStudentCount = 1, afterSubscriptionHref,
                 "Create account"
               )}
             </button>
+            {mode === "login" && (
+              <>
+                <div className="relative my-3">
+                  <div className="absolute inset-0 flex items-center">
+                    <div className="w-full border-t border-slate-800" />
+                  </div>
+                  <div className="relative flex justify-center text-xs uppercase">
+                    <span className="bg-slate-950 px-2 text-slate-500 font-semibold">Or continue with</span>
+                  </div>
+                </div>
+                <a
+                  href="/api/auth/google"
+                  className="inline-flex w-full items-center justify-center gap-3 rounded-full border border-slate-700 bg-slate-900/80 px-5 py-3 text-sm font-bold text-white transition hover:bg-slate-800 hover:border-slate-600 focus:outline-none focus:ring-2 focus:ring-slate-400"
+                >
+                  <svg className="size-4 shrink-0" viewBox="0 0 24 24">
+                    <path
+                      fill="#4285F4"
+                      d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                    />
+                    <path
+                      fill="#34A853"
+                      d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                    />
+                    <path
+                      fill="#FBBC05"
+                      d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                    />
+                    <path
+                      fill="#EA4335"
+                      d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                    />
+                  </svg>
+                  <span>Sign in with Google</span>
+                </a>
+              </>
+            )}
           </form>
           {audience === "parent" ? (
             <p className="mt-7 text-center text-sm text-slate-400">

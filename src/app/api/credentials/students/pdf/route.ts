@@ -20,12 +20,14 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const className = searchParams.get("class") || undefined;
   const section = searchParams.get("section") || undefined;
+  const regenerateParam = searchParams.get("regenerate");
+  const regenerate = regenerateParam === "all" ? "all" : regenerateParam === "missing" ? "missing" : undefined;
 
   // Strict tenant isolation: Use institutionId from authenticated session
   const institutionId = user.institutionId;
 
   try {
-    const { school, students } = await getStudentPdfData(institutionId, className, section);
+    const { school, students } = await getStudentPdfData(institutionId, className, section, { regenerate });
     const pdfBytes = await generateStudentCredentialsPdf({
       school,
       students,

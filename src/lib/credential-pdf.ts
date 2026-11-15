@@ -25,7 +25,22 @@ export type StudentCredentialItem = {
   parentEmail: string;
   status: string;
   temporaryPassword?: string;
+  mustChangePassword?: boolean;
+  loginId?: string;
 };
+
+export function formatStudentLoginId(schoolCode: string | undefined, admissionNumber: string): string {
+  const rawAdm = (admissionNumber || "").trim().toUpperCase().replace(/[^A-Z0-9_-]/g, "");
+  const cleanCode = (schoolCode || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  let cleanAdm = rawAdm.replace(/^STU[-_]?/i, "");
+  if (cleanCode && cleanAdm.startsWith(`${cleanCode}-`)) {
+    cleanAdm = cleanAdm.slice(cleanCode.length + 1);
+  }
+  if (cleanCode) {
+    return `STU-${cleanCode}-${cleanAdm}`;
+  }
+  return `STU-${cleanAdm}`;
+}
 
 export type SchoolCredentialMeta = {
   id: string;
@@ -420,16 +435,17 @@ export async function generateStudentCredentialsPdf(params: {
   const left = 36;
   const tableWidth = 523;
   const rowHeight = 22;
-  const loginUrl = "https://eduledger.co.in/parent/login";
+  const loginUrl = "https://eduledger.co.in/student/login";
 
   const columns = [
-    { key: "sl", label: "#", width: 22, align: "center" as const },
-    { key: "admission", label: "Admission No", width: 68, align: "left" as const },
-    { key: "studentName", label: "Student Name", width: 105, align: "left" as const },
-    { key: "classSec", label: "Class & Sec", width: 55, align: "center" as const },
-    { key: "parentName", label: "Parent / Guardian", width: 88, align: "left" as const },
-    { key: "contact", label: "Mobile / Email", width: 117, align: "left" as const },
-    { key: "credential", label: "Access Credential", width: 68, align: "center" as const },
+    { key: "sl", label: "#", width: 20, align: "center" as const },
+    { key: "admission", label: "Admission No", width: 56, align: "left" as const },
+    { key: "studentName", label: "Student Name", width: 92, align: "left" as const },
+    { key: "classSec", label: "Class & Sec", width: 52, align: "center" as const },
+    { key: "parentName", label: "Parent / Contact", width: 96, align: "left" as const },
+    { key: "loginId", label: "Login ID / Email", width: 82, align: "left" as const },
+    { key: "temporaryPassword", label: "Temporary Password", width: 79, align: "center" as const },
+    { key: "status", label: "Status", width: 46, align: "center" as const },
   ];
 
   const filterParts = [];
@@ -503,11 +519,27 @@ export async function generateStudentCredentialsPdf(params: {
       });
 
       const classSec = [student.className, student.section].filter(Boolean).join("-") || "—";
-      const contactInfo = [student.parentPhone, student.parentEmail].filter(Boolean).join(" | ");
+      const parentDisplay = [student.parentName, student.parentPhone].filter(Boolean).join(" - ") || student.parentName || "Parent";
+      const loginIdDisplay = student.loginId || student.parentEmail || student.admissionNo || "—";
 
-      const credText = student.temporaryPassword
-        ? student.temporaryPassword
-        : (student.status === "Active" ? "Active (Use PW)" : "Pending");
+      let passwordText = "Pending Setup";
+      let passwordColor = mutedText;
+      let passwordFont = font;
+      if (student.temporaryPassword) {
+        passwordText = student.temporaryPassword;
+        passwordColor = rgb(0.75, 0.1, 0.1);
+        passwordFont = bold;
+      } else if (student.mustChangePassword === false) {
+        passwordText = "Password Set";
+        passwordColor = accentGreen;
+        passwordFont = bold;
+      } else if (student.status === "Inactive") {
+        passwordText = "Inactive";
+        passwordColor = mutedText;
+      }
+
+      const statusText = student.status || "Active";
+      const statusColor = statusText === "Active" ? accentGreen : mutedText;
 
       let curX = left;
       drawCell(page, String(i + 1), curX, currentY - 15, columns[0].width, 7.5, font, mutedText, "center");
@@ -522,23 +554,26 @@ export async function generateStudentCredentialsPdf(params: {
       drawCell(page, classSec, curX, currentY - 15, columns[3].width, 7.5, font, inkText, "center");
       curX += columns[3].width;
 
-      drawCell(page, student.parentName || "Parent", curX, currentY - 15, columns[4].width, 7, font, inkText);
+      drawCell(page, parentDisplay, curX, currentY - 15, columns[4].width, 7, font, inkText);
       curX += columns[4].width;
 
-      drawCell(page, contactInfo || "—", curX, currentY - 15, columns[5].width, 6.8, font, mutedText);
+      drawCell(page, loginIdDisplay, curX, currentY - 15, columns[5].width, 6.8, font, mutedText);
       curX += columns[5].width;
 
       drawCell(
         page,
-        credText,
+        passwordText,
         curX,
         currentY - 15,
         columns[6].width,
-        7,
-        bold,
-        student.temporaryPassword ? accentGreen : brandIndigo,
+        7.2,
+        passwordFont,
+        passwordColor,
         "center"
       );
+      curX += columns[6].width;
+
+      drawCell(page, statusText, curX, currentY - 15, columns[7].width, 7.5, bold, statusColor, "center");
 
       currentY -= rowHeight;
     }

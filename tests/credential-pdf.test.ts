@@ -3,8 +3,10 @@ import { PDFDocument } from "pdf-lib";
 import {
   generateTeacherCredentialsPdf,
   generateStudentCredentialsPdf,
+  formatStudentLoginId,
 } from "../src/lib/credential-pdf";
 import { generateSecureTemporaryPassword } from "../src/lib/account-provisioning";
+import { renderAccountActivationEmailHtml } from "../src/lib/email";
 
 describe("EduLedger Credential PDF Generation Subsystem", () => {
   it("generates cryptographically secure, high-entropy temporary passwords", () => {
@@ -220,6 +222,85 @@ describe("EduLedger Credential PDF Generation Subsystem", () => {
 
     expect(pdfBytes).toBeInstanceOf(Uint8Array);
     expect(pdfBytes.length).toBeGreaterThan(5000);
+  });
+
+  it("formats student login IDs consistently with institution school code", () => {
+    expect(formatStudentLoginId("DPS", "101")).toBe("STU-DPS-101");
+    expect(formatStudentLoginId("DPS", "STU-101")).toBe("STU-DPS-101");
+    expect(formatStudentLoginId("DPS", "DPS-101")).toBe("STU-DPS-101");
+    expect(formatStudentLoginId("DPS", "STU-DPS-101")).toBe("STU-DPS-101");
+    expect(formatStudentLoginId("", "2026-05")).toBe("STU-2026-05");
+  });
+
+  it("generates 8-column official Student Credentials PDF with temporary passwords and no placeholder text", async () => {
+    const sampleSchool = {
+      id: "inst-101",
+      name: "Dar Al Arqam Public School",
+      academicYear: "2026-2027",
+    };
+
+    const students = [
+      {
+        admissionNo: "ADM-001",
+        studentId: "stu-1",
+        studentName: "Aarav Sharma",
+        className: "Class 10",
+        section: "A",
+        parentName: "Rajesh Sharma",
+        parentPhone: "9876543210",
+        parentEmail: "rajesh@example.com",
+        loginId: "STU-DAPS-001",
+        status: "Active",
+        temporaryPassword: "EduStudent@2026",
+        mustChangePassword: true,
+      },
+      {
+        admissionNo: "ADM-002",
+        studentId: "stu-2",
+        studentName: "Sara Khan",
+        className: "Class 10",
+        section: "A",
+        parentName: "Irfan Khan",
+        parentPhone: "9123456789",
+        parentEmail: "irfan@example.com",
+        loginId: "STU-DAPS-002",
+        status: "Active",
+        mustChangePassword: false, // Already set their password
+      },
+    ];
+
+    const pdfBytes = await generateStudentCredentialsPdf({
+      school: sampleSchool,
+      students,
+    });
+
+    expect(pdfBytes).toBeInstanceOf(Uint8Array);
+    expect(pdfBytes.length).toBeGreaterThan(1500);
+
+    const loadedDoc = await PDFDocument.load(pdfBytes);
+    expect(loadedDoc.getPageCount()).toBe(1);
+
+    const header = Buffer.from(pdfBytes.slice(0, 5)).toString("ascii");
+    expect(header).toBe("%PDF-");
+  });
+
+  it("renders professional account activation email HTML correctly", () => {
+    const html = renderAccountActivationEmailHtml({
+      to: "teacher@school.edu",
+      name: "Dr. A. P. J. Kalam",
+      role: "TEACHER",
+      institutionName: "National Academy of Sciences",
+      loginId: "TCH-NAS-001",
+      temporaryPassword: "EduTeacher@2026",
+      loginUrl: "https://eduledger.co.in/teacher/login",
+    });
+
+    expect(html).toContain("National Academy of Sciences");
+    expect(html).toContain("Teacher &amp; Faculty Portal");
+    expect(html).toContain("Dr. A. P. J. Kalam");
+    expect(html).toContain("TCH-NAS-001");
+    expect(html).toContain("EduTeacher@2026");
+    expect(html).toContain("https://eduledger.co.in/teacher/login");
   });
 });
 

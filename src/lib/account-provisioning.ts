@@ -1,7 +1,7 @@
 import "server-only";
 import { randomBytes } from "node:crypto";
 import { hash } from "bcryptjs";
-import { queryRows, queryRow, queryRun, getDb, formatTeacherLoginId } from "./db";
+import { queryRows, queryRow, queryRun, getDb, formatTeacherLoginId, formatStudentLoginId } from "./db";
 import type { TeacherCredentialItem, StudentCredentialItem, SchoolCredentialMeta } from "./credential-pdf";
 
 export function generateSecureTemporaryPassword(): string {
@@ -166,13 +166,24 @@ export async function auditAndRepairTeacherCredentials(
     `SELECT id, name FROM institutions WHERE id = ?`,
     [institutionId]
   );
-  const settings = await queryRow<{ school_code?: string }>(
-    `SELECT school_code FROM settings WHERE institution_id = ?`,
+  const settings = await queryRow<{
+    school_code?: string;
+    default_teacher_password?: string;
+    teacher_password_mode?: "COMMON" | "UNIQUE";
+  }>(
+    `SELECT school_code, COALESCE(default_teacher_password, 'EduTeacher@2026') as default_teacher_password, COALESCE(teacher_password_mode, 'COMMON') as teacher_password_mode FROM settings WHERE institution_id = ?`,
     [institutionId]
   );
 
   const schoolName = school?.name || "School";
   const schoolCode = settings?.school_code || schoolName.replace(/[^A-Za-z0-9]/g, "").slice(0, 4).toUpperCase();
+
+  const getTeacherTempPassword = () => {
+    if (settings?.teacher_password_mode === "UNIQUE") {
+      return generateSecureTemporaryPassword();
+    }
+    return settings?.default_teacher_password || "EduTeacher@2026";
+  };
 
   const teachers = await queryRows<{
     id: string;
@@ -265,7 +276,7 @@ export async function auditAndRepairTeacherCredentials(
 
     if (!existingUser) {
       // 1. Teacher account does NOT exist -> PROVISION NEW ACCOUNT
-      const tempPassword = generateSecureTemporaryPassword();
+      const tempPassword = getTeacherTempPassword();
       const passwordHash = await hash(tempPassword, 10);
       const newUserId = crypto.randomUUID();
 
@@ -315,7 +326,7 @@ export async function auditAndRepairTeacherCredentials(
 
       if (missingPassword || shouldRegenerate) {
         // Generate new temporary password
-        const tempPassword = generateSecureTemporaryPassword();
+        const tempPassword = getTeacherTempPassword();
         const passwordHash = await hash(tempPassword, 10);
 
         await queryRun(
@@ -344,7 +355,7 @@ export async function auditAndRepairTeacherCredentials(
       } else if (userMustChange && options.includePendingPasswords !== false) {
         // Teacher has not yet completed first login and changed their password.
         // Ensure a valid temporary password is synchronized and available.
-        const tempPassword = generateSecureTemporaryPassword();
+        const tempPassword = getTeacherTempPassword();
         const passwordHash = await hash(tempPassword, 10);
 
         await queryRun(
@@ -407,6 +418,360 @@ export async function auditAndRepairTeacherCredentials(
     repaired,
     activeWithSetPassword,
     credentials,
+  };
+}
+
+export type StudentAuditSummary = {
+  totalAudited: number;
+  provisioned: number;
+  repaired: number;
+  activeWithSetPassword: number;
+  credentials: Map<string, {
+    studentId: string;
+    admissionNo: string;
+    loginId: string;
+    name: string;
+    className: string;
+    section: string;
+    parentName: string;
+    parentPhone: string;
+    parentEmail: string;
+    temporaryPassword?: string;
+    mustChangePassword: boolean;
+    status: string;
+  }>;
+};
+
+/**
+ * Audits all students in an institution and provisions/repairs student & parent portal accounts.
+ * Never overwrites passwords for active students or parents who already set their own password,
+ * unless explicitly requested via regenerateAll or regenerateStudentId.
+ */
+export async function auditAndRepairStudentCredentials(
+  institutionId: string,
+  options: {
+    regenerateAll?: boolean;
+    regenerateStudentId?: string;
+    includePendingPasswords?: boolean;
+  } = {}
+): Promise<StudentAuditSummary> {
+  const school = await queryRow<{ id: string; name: string }>(
+    `SELECT id, name FROM institutions WHERE id = ?`,
+    [institutionId]
+  );
+  const settings = await queryRow<{
+    school_code?: string;
+    default_student_password?: string;
+    student_password_mode?: "COMMON" | "UNIQUE";
+  }>(
+    `SELECT school_code, COALESCE(default_student_password, 'EduStudent@2026') as default_student_password, COALESCE(student_password_mode, 'COMMON') as student_password_mode FROM settings WHERE institution_id = ?`,
+    [institutionId]
+  );
+
+  const schoolName = school?.name || "School";
+  const schoolCode = settings?.school_code || schoolName.replace(/[^A-Za-z0-9]/g, "").slice(0, 4).toUpperCase();
+
+  const getStudentTempPassword = () => {
+    if (settings?.student_password_mode === "UNIQUE") {
+      return generateSecureTemporaryPassword();
+    }
+    return settings?.default_student_password || "EduStudent@2026";
+  };
+
+  const students = await queryRows<{
+    id: string;
+    name: string;
+    admission: string;
+    class_name: string;
+    section: string;
+    parent: string;
+    parent_phone: string;
+    parent_email: string;
+    status: string;
+    login_id: string;
+  }>(
+    `SELECT id, name, admission, class_name, section, parent, parent_phone, parent_email, status, COALESCE(login_id, '') as login_id
+     FROM students
+     WHERE institution_id = ? AND status <> 'Deleted'
+     ORDER BY class_name ASC, section ASC, name ASC`,
+    [institutionId]
+  );
+
+  let provisioned = 0;
+  let repaired = 0;
+  let activeWithSetPassword = 0;
+
+  const credentials = new Map<string, {
+    studentId: string;
+    admissionNo: string;
+    loginId: string;
+    name: string;
+    className: string;
+    section: string;
+    parentName: string;
+    parentPhone: string;
+    parentEmail: string;
+    temporaryPassword?: string;
+    mustChangePassword: boolean;
+    status: string;
+  }>();
+
+  for (const student of students) {
+    const canonicalLoginId = student.login_id || formatStudentLoginId(schoolCode, student.admission || student.id);
+    const cleanAdmission = (student.admission || student.id).trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
+    const cleanEmail = (student.parent_email || "").trim().toLowerCase();
+    const syntheticEmail = `student_${cleanAdmission}@${institutionId.toLowerCase()}.internal`;
+    const effectiveEmail = cleanEmail || syntheticEmail;
+
+    let existingUser = await queryRow<{
+      id: string;
+      email: string;
+      password_hash: string | null;
+      role: string;
+      status: string;
+      login_id: string | null;
+      must_change_password: boolean | null;
+    }>(
+      `SELECT id, email, password_hash, role, status, login_id, must_change_password
+       FROM users
+       WHERE institution_id = ? AND role IN ('STUDENT', 'PARENT') AND (
+         (login_id IS NOT NULL AND LOWER(TRIM(login_id)) = LOWER(?))
+         OR (LOWER(TRIM(email)) = LOWER(?))
+         OR (email = ?)
+       )
+       LIMIT 1`,
+      [institutionId, canonicalLoginId, effectiveEmail, syntheticEmail]
+    );
+
+    const studentStatus = student.status === "Inactive" ? "Inactive" : "Active";
+    const shouldRegenerate = Boolean(
+      options.regenerateAll || (options.regenerateStudentId && options.regenerateStudentId === student.id)
+    );
+
+    if (!existingUser) {
+      const tempPassword = getStudentTempPassword();
+      const passwordHash = await hash(tempPassword, 10);
+      const newUserId = crypto.randomUUID();
+
+      await queryRun(
+        `INSERT INTO users(id, email, name, password_hash, role, institution_id, status, login_id, must_change_password)
+         VALUES(?, ?, ?, ?, 'STUDENT', ?, ?, ?, TRUE)`,
+        [newUserId, effectiveEmail, student.name || "Student", passwordHash, institutionId, studentStatus, canonicalLoginId]
+      );
+
+      if (!student.login_id) {
+        await queryRun(
+          `UPDATE students SET login_id = ? WHERE id = ? AND institution_id = ?`,
+          [canonicalLoginId, student.id, institutionId]
+        );
+      }
+
+      await queryRun(
+        `INSERT INTO parent_students(id, institution_id, parent_user_id, student_id, relationship, is_primary)
+         VALUES(?, ?, ?, ?, 'Student', TRUE)
+         ON CONFLICT (parent_user_id, student_id) DO NOTHING`,
+        [crypto.randomUUID(), institutionId, newUserId, student.id]
+      );
+
+      provisioned++;
+      credentials.set(student.id, {
+        studentId: student.id,
+        admissionNo: student.admission || "—",
+        loginId: canonicalLoginId,
+        name: student.name,
+        className: student.class_name,
+        section: student.section,
+        parentName: student.parent || "Parent",
+        parentPhone: student.parent_phone,
+        parentEmail: cleanEmail,
+        temporaryPassword: tempPassword,
+        mustChangePassword: true,
+        status: studentStatus,
+      });
+    } else {
+      const missingPassword = !existingUser.password_hash || existingUser.password_hash.trim().length === 0;
+      const userMustChange = existingUser.must_change_password ?? false;
+
+      if (!existingUser.login_id) {
+        await queryRun(
+          `UPDATE users SET login_id = ? WHERE id = ?`,
+          [canonicalLoginId, existingUser.id]
+        );
+      }
+      if (!student.login_id) {
+        await queryRun(
+          `UPDATE students SET login_id = ? WHERE id = ? AND institution_id = ?`,
+          [canonicalLoginId, student.id, institutionId]
+        );
+      }
+
+      await queryRun(
+        `INSERT INTO parent_students(id, institution_id, parent_user_id, student_id, relationship, is_primary)
+         VALUES(?, ?, ?, ?, 'Student', TRUE)
+         ON CONFLICT (parent_user_id, student_id) DO NOTHING`,
+        [crypto.randomUUID(), institutionId, existingUser.id, student.id]
+      );
+
+      if (missingPassword || shouldRegenerate) {
+        const tempPassword = getStudentTempPassword();
+        const passwordHash = await hash(tempPassword, 10);
+
+        await queryRun(
+          `UPDATE users
+           SET password_hash = ?,
+               must_change_password = TRUE,
+               status = ?,
+               login_id = COALESCE(login_id, ?),
+               institution_id = ?
+           WHERE id = ?`,
+          [passwordHash, studentStatus, canonicalLoginId, institutionId, existingUser.id]
+        );
+
+        repaired++;
+        credentials.set(student.id, {
+          studentId: student.id,
+          admissionNo: student.admission || "—",
+          loginId: canonicalLoginId,
+          name: student.name,
+          className: student.class_name,
+          section: student.section,
+          parentName: student.parent || "Parent",
+          parentPhone: student.parent_phone,
+          parentEmail: cleanEmail,
+          temporaryPassword: tempPassword,
+          mustChangePassword: true,
+          status: studentStatus,
+        });
+      } else if (userMustChange && options.includePendingPasswords !== false) {
+        const tempPassword = getStudentTempPassword();
+        const passwordHash = await hash(tempPassword, 10);
+
+        await queryRun(
+          `UPDATE users
+           SET password_hash = ?,
+               must_change_password = TRUE,
+               status = ?,
+               login_id = COALESCE(login_id, ?),
+               institution_id = ?
+           WHERE id = ?`,
+          [passwordHash, studentStatus, canonicalLoginId, institutionId, existingUser.id]
+        );
+
+        repaired++;
+        credentials.set(student.id, {
+          studentId: student.id,
+          admissionNo: student.admission || "—",
+          loginId: canonicalLoginId,
+          name: student.name,
+          className: student.class_name,
+          section: student.section,
+          parentName: student.parent || "Parent",
+          parentPhone: student.parent_phone,
+          parentEmail: cleanEmail,
+          temporaryPassword: tempPassword,
+          mustChangePassword: true,
+          status: studentStatus,
+        });
+      } else if (userMustChange) {
+        credentials.set(student.id, {
+          studentId: student.id,
+          admissionNo: student.admission || "—",
+          loginId: canonicalLoginId,
+          name: student.name,
+          className: student.class_name,
+          section: student.section,
+          parentName: student.parent || "Parent",
+          parentPhone: student.parent_phone,
+          parentEmail: cleanEmail,
+          temporaryPassword: undefined,
+          mustChangePassword: true,
+          status: studentStatus,
+        });
+      } else {
+        activeWithSetPassword++;
+        credentials.set(student.id, {
+          studentId: student.id,
+          admissionNo: student.admission || "—",
+          loginId: canonicalLoginId,
+          name: student.name,
+          className: student.class_name,
+          section: student.section,
+          parentName: student.parent || "Parent",
+          parentPhone: student.parent_phone,
+          parentEmail: cleanEmail,
+          temporaryPassword: undefined,
+          mustChangePassword: false,
+          status: studentStatus,
+        });
+      }
+    }
+  }
+
+  return {
+    totalAudited: students.length,
+    provisioned,
+    repaired,
+    activeWithSetPassword,
+    credentials,
+  };
+}
+
+export async function synchronizeAllInstitutionAccounts(
+  institutionId: string,
+  options: {
+    regenerateAllTeachers?: boolean;
+    regenerateAllStudents?: boolean;
+    adminUserId?: string;
+  } = {}
+) {
+  const teacherAudit = await auditAndRepairTeacherCredentials(institutionId, {
+    regenerateAll: options.regenerateAllTeachers,
+    includePendingPasswords: true,
+  });
+
+  const studentAudit = await auditAndRepairStudentCredentials(institutionId, {
+    regenerateAll: options.regenerateAllStudents,
+    includePendingPasswords: true,
+  });
+
+  await queryRun(
+    `UPDATE settings SET accounts_last_synced_at = CURRENT_TIMESTAMP WHERE institution_id = ?`,
+    [institutionId]
+  );
+
+  const settings = await queryRow<{
+    default_teacher_password?: string;
+    default_student_password?: string;
+    teacher_password_mode?: string;
+    student_password_mode?: string;
+    accounts_last_synced_at?: string;
+  }>(
+    `SELECT default_teacher_password, default_student_password, teacher_password_mode, student_password_mode, accounts_last_synced_at::text FROM settings WHERE institution_id = ?`,
+    [institutionId]
+  );
+
+  return {
+    success: true,
+    institutionId,
+    teachers: {
+      total: teacherAudit.totalAudited,
+      provisioned: teacherAudit.provisioned,
+      repaired: teacherAudit.repaired,
+      activeWithSetPassword: teacherAudit.activeWithSetPassword,
+    },
+    students: {
+      total: studentAudit.totalAudited,
+      provisioned: studentAudit.provisioned,
+      repaired: studentAudit.repaired,
+      activeWithSetPassword: studentAudit.activeWithSetPassword,
+    },
+    settings: {
+      defaultTeacherPassword: settings?.default_teacher_password || "EduTeacher@2026",
+      defaultStudentPassword: settings?.default_student_password || "EduStudent@2026",
+      teacherPasswordMode: settings?.teacher_password_mode || "COMMON",
+      studentPasswordMode: settings?.student_password_mode || "COMMON",
+      accountsLastSyncedAt: settings?.accounts_last_synced_at || new Date().toISOString(),
+    },
   };
 }
 
@@ -657,17 +1022,28 @@ export async function getTeacherPdfData(
 }
 
 /**
- * Fetch students formatted for PDF generation
+ * Fetch students formatted for PDF generation with audited credentials
  */
 export async function getStudentPdfData(
   institutionId: string,
   classFilter?: string,
-  sectionFilter?: string
+  sectionFilter?: string,
+  options?: { regenerate?: "all" | "missing" }
 ): Promise<{ school: SchoolCredentialMeta; students: StudentCredentialItem[] }> {
-  const school = await queryRow<{ id: string; name: string }>(
-    `SELECT id, name FROM institutions WHERE id = ?`,
-    [institutionId]
-  );
+  const [school, settings, audit] = await Promise.all([
+    queryRow<{ id: string; name: string }>(
+      `SELECT id, name FROM institutions WHERE id = ?`,
+      [institutionId]
+    ),
+    queryRow<{ academic_year?: string }>(
+      `SELECT academic_year FROM settings WHERE institution_id = ?`,
+      [institutionId]
+    ),
+    auditAndRepairStudentCredentials(institutionId, {
+      regenerateAll: options?.regenerate === "all",
+      includePendingPasswords: true,
+    }),
+  ]);
 
   let query = `
     SELECT
@@ -679,9 +1055,9 @@ export async function getStudentPdfData(
       s.parent as "parentName",
       s.parent_phone as "parentPhone",
       s.parent_email as "parentEmail",
-      CASE WHEN ps.id IS NOT NULL THEN 'Active' ELSE 'Pending' END as status
+      s.status,
+      COALESCE(s.login_id, '') as "loginId"
     FROM students s
-    LEFT JOIN parent_students ps ON ps.student_id = s.id AND ps.institution_id = s.institution_id
     WHERE s.institution_id = ? AND s.status <> 'Deleted'
   `;
   const params: unknown[] = [institutionId];
@@ -707,24 +1083,32 @@ export async function getStudentPdfData(
     parentPhone: string;
     parentEmail: string;
     status: string;
+    loginId: string;
   }>(query, params);
 
   return {
     school: {
       id: school?.id || institutionId,
       name: school?.name || "School",
+      academicYear: settings?.academic_year || "2026-2027",
     },
-    students: rows.map((r) => ({
-      admissionNo: r.admissionNo || "—",
-      studentId: r.id,
-      studentName: r.studentName,
-      className: r.className || "",
-      section: r.section || "",
-      parentName: r.parentName || "Parent",
-      parentPhone: r.parentPhone || "",
-      parentEmail: r.parentEmail || "",
-      status: r.status,
-    })),
+    students: rows.map((r) => {
+      const cred = audit.credentials.get(r.id);
+      return {
+        admissionNo: r.admissionNo || "—",
+        studentId: r.id,
+        studentName: r.studentName,
+        className: r.className || "",
+        section: r.section || "",
+        parentName: r.parentName || "Parent",
+        parentPhone: r.parentPhone || "",
+        parentEmail: r.parentEmail || "",
+        status: cred?.status || (r.status === "Inactive" ? "Inactive" : "Active"),
+        temporaryPassword: cred?.temporaryPassword,
+        mustChangePassword: cred?.mustChangePassword,
+        loginId: cred?.loginId || r.loginId || r.admissionNo,
+      };
+    }),
   };
 }
 

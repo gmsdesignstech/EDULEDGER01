@@ -12,6 +12,7 @@ export const registrationSchema = z.object({
   acceptedTerms: z.literal(true, {
     error: "You must accept the Terms of Service and Privacy Policy.",
   }),
+  institutionType: z.enum(["School", "College"]).default("School"),
   studentCount: z.coerce.number().int().min(1).max(100000),
   subscriptionStartMonth: z.string(),
   subscriptionEndMonth: z.string(),

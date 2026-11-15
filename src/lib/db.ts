@@ -403,12 +403,13 @@ CREATE INDEX IF NOT EXISTS idx_notif_deliv_user ON notification_deliveries(user_
 CREATE INDEX IF NOT EXISTS idx_notif_deliv_event ON notification_deliveries(event_id);
 `);
     await sql.unsafe(`CREATE TABLE IF NOT EXISTS admin_settings(id TEXT PRIMARY KEY,application_name TEXT NOT NULL DEFAULT 'EduLedger',support_email TEXT NOT NULL DEFAULT '',currency TEXT NOT NULL DEFAULT 'INR',timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata',date_format TEXT NOT NULL DEFAULT 'DD/MM/YYYY',session_timeout_minutes INTEGER NOT NULL DEFAULT 10080,updated_by TEXT,updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);`);
-    const additions={settings:["result_grade_bands TEXT NOT NULL DEFAULT ''","result_overall_pass_percent INTEGER NOT NULL DEFAULT 35","result_require_subject_pass BOOLEAN NOT NULL DEFAULT TRUE","result_ranking_enabled BOOLEAN NOT NULL DEFAULT FALSE","result_principal_remarks TEXT NOT NULL DEFAULT ''","result_class_teacher_remarks TEXT NOT NULL DEFAULT ''","result_report_format TEXT NOT NULL DEFAULT 'Standard'","timetable_start_time TEXT NOT NULL DEFAULT '09:00'","timetable_end_time TEXT NOT NULL DEFAULT '16:00'","timetable_period_minutes INTEGER NOT NULL DEFAULT 40","timetable_short_break_minutes INTEGER NOT NULL DEFAULT 15","timetable_lunch_minutes INTEGER NOT NULL DEFAULT 40","timetable_periods_per_day INTEGER NOT NULL DEFAULT 9","timetable_working_days TEXT NOT NULL DEFAULT '1,2,3,4,5'","timetable_timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata'","school_code TEXT NOT NULL DEFAULT ''","dise_code TEXT NOT NULL DEFAULT ''","website TEXT NOT NULL DEFAULT ''","city TEXT NOT NULL DEFAULT ''","state TEXT NOT NULL DEFAULT ''","pin_code TEXT NOT NULL DEFAULT ''","principal_name TEXT NOT NULL DEFAULT ''","registration_number TEXT NOT NULL DEFAULT ''","affiliation TEXT NOT NULL DEFAULT ''","motto TEXT NOT NULL DEFAULT ''","school_type TEXT NOT NULL DEFAULT ''","fee_receipt_title TEXT NOT NULL DEFAULT 'Fee Payment Receipt'","fee_receipt_subheader TEXT NOT NULL DEFAULT 'Standard Fee Receipt Template'","payslip_title TEXT NOT NULL DEFAULT 'Pay Slip'","payslip_subheader TEXT NOT NULL DEFAULT 'Standard Pay Slip Template'","footer_text TEXT NOT NULL DEFAULT ''","signature_label TEXT NOT NULL DEFAULT 'Authorized Signatory'","attendance_correction_window_hours INTEGER NOT NULL DEFAULT 24","upi_enabled BOOLEAN NOT NULL DEFAULT FALSE","upi_id TEXT NOT NULL DEFAULT ''","payee_name TEXT NOT NULL DEFAULT ''","payment_method_name TEXT NOT NULL DEFAULT 'School UPI / QR Code'","bank_name TEXT NOT NULL DEFAULT ''","account_number TEXT NOT NULL DEFAULT ''","ifsc_code TEXT NOT NULL DEFAULT ''","payment_instructions TEXT NOT NULL DEFAULT ''"],students:["blood_group TEXT","mother_name TEXT","special_quota TEXT","special_quota_description TEXT","academic_year TEXT NOT NULL DEFAULT ''","leaving_date TEXT","leaving_reason TEXT NOT NULL DEFAULT ''","graduation_date TEXT","leaving_remarks TEXT NOT NULL DEFAULT ''","photo_path TEXT"],payments:["payment_frequency TEXT NOT NULL DEFAULT 'Custom'","original_amount DOUBLE PRECISION NOT NULL DEFAULT 0","discount_type TEXT NOT NULL DEFAULT 'Fixed'","discount_value DOUBLE PRECISION NOT NULL DEFAULT 0","discount_amount DOUBLE PRECISION NOT NULL DEFAULT 0","discount_reason TEXT NOT NULL DEFAULT ''","late_fee DOUBLE PRECISION NOT NULL DEFAULT 0","net_payable DOUBLE PRECISION NOT NULL DEFAULT 0"],users:["status TEXT NOT NULL DEFAULT 'Active'","last_login_at TIMESTAMPTZ","login_id TEXT","must_change_password BOOLEAN NOT NULL DEFAULT FALSE"],teachers:["login_id TEXT NOT NULL DEFAULT ''"],institutions:["status TEXT NOT NULL DEFAULT 'Active'"],subscriptions:["payment_status TEXT NOT NULL DEFAULT 'Pending'","plan_type TEXT NOT NULL DEFAULT 'Yearly'","currency TEXT NOT NULL DEFAULT 'INR'","renewal_date TIMESTAMPTZ","auto_renew BOOLEAN NOT NULL DEFAULT FALSE","last_notification_sent TIMESTAMPTZ","grace_period_days INTEGER NOT NULL DEFAULT 0"],notifications:["link TEXT NOT NULL DEFAULT ''","delivery_status TEXT NOT NULL DEFAULT 'SENT'"],admin_settings:["subscription_warning_days TEXT NOT NULL DEFAULT '30,15,7,3,1,0,-1'","subscription_notifications_enabled BOOLEAN NOT NULL DEFAULT TRUE","in_app_notifications_enabled BOOLEAN NOT NULL DEFAULT TRUE","email_notifications_enabled BOOLEAN NOT NULL DEFAULT FALSE","subscription_grace_days INTEGER NOT NULL DEFAULT 0"]} as const;
+    const additions={settings:["result_grade_bands TEXT NOT NULL DEFAULT ''","result_overall_pass_percent INTEGER NOT NULL DEFAULT 35","result_require_subject_pass BOOLEAN NOT NULL DEFAULT TRUE","result_ranking_enabled BOOLEAN NOT NULL DEFAULT FALSE","result_principal_remarks TEXT NOT NULL DEFAULT ''","result_class_teacher_remarks TEXT NOT NULL DEFAULT ''","result_report_format TEXT NOT NULL DEFAULT 'Standard'","timetable_start_time TEXT NOT NULL DEFAULT '09:00'","timetable_end_time TEXT NOT NULL DEFAULT '16:00'","timetable_period_minutes INTEGER NOT NULL DEFAULT 40","timetable_short_break_minutes INTEGER NOT NULL DEFAULT 15","timetable_lunch_minutes INTEGER NOT NULL DEFAULT 40","timetable_periods_per_day INTEGER NOT NULL DEFAULT 9","timetable_working_days TEXT NOT NULL DEFAULT '1,2,3,4,5'","timetable_timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata'","school_code TEXT NOT NULL DEFAULT ''","dise_code TEXT NOT NULL DEFAULT ''","website TEXT NOT NULL DEFAULT ''","city TEXT NOT NULL DEFAULT ''","state TEXT NOT NULL DEFAULT ''","pin_code TEXT NOT NULL DEFAULT ''","principal_name TEXT NOT NULL DEFAULT ''","registration_number TEXT NOT NULL DEFAULT ''","affiliation TEXT NOT NULL DEFAULT ''","motto TEXT NOT NULL DEFAULT ''","school_type TEXT NOT NULL DEFAULT ''","fee_receipt_title TEXT NOT NULL DEFAULT 'Fee Payment Receipt'","fee_receipt_subheader TEXT NOT NULL DEFAULT 'Standard Fee Receipt Template'","payslip_title TEXT NOT NULL DEFAULT 'Pay Slip'","payslip_subheader TEXT NOT NULL DEFAULT 'Standard Pay Slip Template'","footer_text TEXT NOT NULL DEFAULT ''","signature_label TEXT NOT NULL DEFAULT 'Authorized Signatory'","attendance_correction_window_hours INTEGER NOT NULL DEFAULT 24","upi_enabled BOOLEAN NOT NULL DEFAULT FALSE","upi_id TEXT NOT NULL DEFAULT ''","payee_name TEXT NOT NULL DEFAULT ''","payment_method_name TEXT NOT NULL DEFAULT 'School UPI / QR Code'","bank_name TEXT NOT NULL DEFAULT ''","account_number TEXT NOT NULL DEFAULT ''","ifsc_code TEXT NOT NULL DEFAULT ''","payment_instructions TEXT NOT NULL DEFAULT ''","default_teacher_password TEXT NOT NULL DEFAULT 'EduTeacher@2026'","default_student_password TEXT NOT NULL DEFAULT 'EduStudent@2026'","teacher_password_mode TEXT NOT NULL DEFAULT 'COMMON'","student_password_mode TEXT NOT NULL DEFAULT 'COMMON'","accounts_last_synced_at TIMESTAMPTZ"],students:["blood_group TEXT","mother_name TEXT","special_quota TEXT","special_quota_description TEXT","academic_year TEXT NOT NULL DEFAULT ''","leaving_date TEXT","leaving_reason TEXT NOT NULL DEFAULT ''","graduation_date TEXT","leaving_remarks TEXT NOT NULL DEFAULT ''","photo_path TEXT","login_id TEXT NOT NULL DEFAULT ''"],payments:["payment_frequency TEXT NOT NULL DEFAULT 'Custom'","original_amount DOUBLE PRECISION NOT NULL DEFAULT 0","discount_type TEXT NOT NULL DEFAULT 'Fixed'","discount_value DOUBLE PRECISION NOT NULL DEFAULT 0","discount_amount DOUBLE PRECISION NOT NULL DEFAULT 0","discount_reason TEXT NOT NULL DEFAULT ''","late_fee DOUBLE PRECISION NOT NULL DEFAULT 0","net_payable DOUBLE PRECISION NOT NULL DEFAULT 0"],users:["status TEXT NOT NULL DEFAULT 'Active'","last_login_at TIMESTAMPTZ","login_id TEXT","must_change_password BOOLEAN NOT NULL DEFAULT FALSE"],teachers:["login_id TEXT NOT NULL DEFAULT ''"],institutions:["status TEXT NOT NULL DEFAULT 'Active'","institution_type TEXT NOT NULL DEFAULT 'School'"],subscriptions:["payment_status TEXT NOT NULL DEFAULT 'Pending'","plan_type TEXT NOT NULL DEFAULT 'Yearly'","currency TEXT NOT NULL DEFAULT 'INR'","renewal_date TIMESTAMPTZ","auto_renew BOOLEAN NOT NULL DEFAULT FALSE","last_notification_sent TIMESTAMPTZ","grace_period_days INTEGER NOT NULL DEFAULT 0"],notifications:["link TEXT NOT NULL DEFAULT ''","delivery_status TEXT NOT NULL DEFAULT 'SENT'"],admin_settings:["subscription_warning_days TEXT NOT NULL DEFAULT '30,15,7,3,1,0,-1'","subscription_notifications_enabled BOOLEAN NOT NULL DEFAULT TRUE","in_app_notifications_enabled BOOLEAN NOT NULL DEFAULT TRUE","email_notifications_enabled BOOLEAN NOT NULL DEFAULT FALSE","subscription_grace_days INTEGER NOT NULL DEFAULT 0"]} as const;
 
       for(const [table,definitions] of Object.entries(additions))for(const definition of definitions)await sql.unsafe(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${definition}`);
 
     await sql.unsafe("CREATE INDEX IF NOT EXISTS idx_users_login_id ON users(LOWER(login_id)) WHERE login_id IS NOT NULL;");
     await sql.unsafe("CREATE INDEX IF NOT EXISTS idx_teachers_login_id ON teachers(LOWER(login_id)) WHERE login_id <> '';");
+    await sql.unsafe("CREATE INDEX IF NOT EXISTS idx_students_login_id ON students(LOWER(login_id)) WHERE login_id <> '';");
 
     const fixedPricingAdditions={subscriptions:["student_count_at_purchase INTEGER","pricing_model TEXT NOT NULL DEFAULT 'PER_STUDENT'","plan_version INTEGER NOT NULL DEFAULT 1"],subscription_plans:["pricing_model TEXT NOT NULL DEFAULT 'PER_STUDENT'","plan_version INTEGER NOT NULL DEFAULT 1","effective_at TIMESTAMPTZ","eligible_new_schools BOOLEAN NOT NULL DEFAULT FALSE"],subscription_payments:["student_count_at_purchase INTEGER","pricing_model TEXT NOT NULL DEFAULT 'PER_STUDENT'","plan_version INTEGER NOT NULL DEFAULT 1"]} as const;
 
@@ -900,8 +901,14 @@ export async function getInstitution(institutionId: string) {
     diseCode: string; website: string; city: string; state: string; pinCode: string;
     principalName: string; registrationNumber: string; affiliation: string; motto: string; schoolType: string;
     feeReceiptTitle: string; feeReceiptSubheader: string; payslipTitle: string; payslipSubheader: string; footerText: string; signatureLabel: string;
+    institutionType: string;
+    defaultTeacherPassword: string;
+    defaultStudentPassword: string;
+    teacherPasswordMode: "COMMON" | "UNIQUE";
+    studentPasswordMode: "COMMON" | "UNIQUE";
+    accountsLastSyncedAt?: string | null;
   }>(
-    `SELECT i.id,i.name,COALESCE(s.school_address,'') address,COALESCE(s.school_phone,'') phone,COALESCE(s.school_email,'') email,COALESCE(s.logo_url,'') AS "logoUrl",COALESCE(s.academic_year,'2026-2027') AS "academicYear",COALESCE(s.school_code,'') AS "schoolCode",COALESCE(s.dise_code,'') AS "diseCode",COALESCE(s.website,'') website,COALESCE(s.city,'') city,COALESCE(s.state,'') state,COALESCE(s.pin_code,'') AS "pinCode",COALESCE(s.principal_name,'') AS "principalName",COALESCE(s.registration_number,'') AS "registrationNumber",COALESCE(s.affiliation,'') affiliation,COALESCE(s.motto,'') motto,COALESCE(s.school_type,'') AS "schoolType",COALESCE(s.fee_receipt_title,'Fee Payment Receipt') AS "feeReceiptTitle",COALESCE(s.fee_receipt_subheader,'Standard Fee Receipt Template') AS "feeReceiptSubheader",COALESCE(s.payslip_title,'Pay Slip') AS "payslipTitle",COALESCE(s.payslip_subheader,'Standard Pay Slip Template') AS "payslipSubheader",COALESCE(s.footer_text,'') AS "footerText",COALESCE(s.signature_label,'Authorized Signatory') AS "signatureLabel" FROM institutions i LEFT JOIN settings s ON s.institution_id=i.id WHERE i.id=?`,
+    `SELECT i.id,i.name,COALESCE(i.institution_type,'School') AS "institutionType",COALESCE(s.school_address,'') address,COALESCE(s.school_phone,'') phone,COALESCE(s.school_email,'') email,COALESCE(s.logo_url,'') AS "logoUrl",COALESCE(s.academic_year,'2026-2027') AS "academicYear",COALESCE(s.school_code,'') AS "schoolCode",COALESCE(s.dise_code,'') AS "diseCode",COALESCE(s.website,'') website,COALESCE(s.city,'') city,COALESCE(s.state,'') state,COALESCE(s.pin_code,'') AS "pinCode",COALESCE(s.principal_name,'') AS "principalName",COALESCE(s.registration_number,'') AS "registrationNumber",COALESCE(s.affiliation,'') affiliation,COALESCE(s.motto,'') motto,COALESCE(s.school_type,'') AS "schoolType",COALESCE(s.fee_receipt_title,'Fee Payment Receipt') AS "feeReceiptTitle",COALESCE(s.fee_receipt_subheader,'Standard Fee Receipt Template') AS "feeReceiptSubheader",COALESCE(s.payslip_title,'Pay Slip') AS "payslipTitle",COALESCE(s.payslip_subheader,'Standard Pay Slip Template') AS "payslipSubheader",COALESCE(s.footer_text,'') AS "footerText",COALESCE(s.signature_label,'Authorized Signatory') AS "signatureLabel",COALESCE(s.default_teacher_password,'EduTeacher@2026') AS "defaultTeacherPassword",COALESCE(s.default_student_password,'EduStudent@2026') AS "defaultStudentPassword",COALESCE(s.teacher_password_mode,'COMMON') AS "teacherPasswordMode",COALESCE(s.student_password_mode,'COMMON') AS "studentPasswordMode",s.accounts_last_synced_at::text AS "accountsLastSyncedAt" FROM institutions i LEFT JOIN settings s ON s.institution_id=i.id WHERE i.id=?`,
     [institutionId],
     await ready(),
   );
@@ -917,6 +924,19 @@ export function formatTeacherLoginId(schoolCode: string | undefined, employeeId:
     return `TCH-${cleanCode}-${cleanEmp}`;
   }
   return `TCH-${cleanEmp}`;
+}
+
+export function formatStudentLoginId(schoolCode: string | undefined, admissionNumber: string): string {
+  const rawAdm = (admissionNumber || "").trim().toUpperCase().replace(/[^A-Z0-9_-]/g, "");
+  const cleanCode = (schoolCode || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  let cleanAdm = rawAdm.replace(/^STU[-_]?/i, "");
+  if (cleanCode && cleanAdm.startsWith(`${cleanCode}-`)) {
+    cleanAdm = cleanAdm.slice(cleanCode.length + 1);
+  }
+  if (cleanCode) {
+    return `STU-${cleanCode}-${cleanAdm}`;
+  }
+  return `STU-${cleanAdm}`;
 }
 
 export async function findUserByEmail(email: string) {
@@ -998,6 +1018,35 @@ export async function findUserByEmailOrPhone(identifier: string) {
       db,
     );
     if (teacherById) return teacherById;
+  } catch {
+    // Ignore
+  }
+
+  // 1c. Student lookup by login_id or admission number across students joined with users
+  try {
+    const studentById = await row<DbUser & { passwordHash: string; status: string }>(
+      `SELECT u.id, u.email, u.name, u.password_hash AS "passwordHash", u.role,
+              CASE WHEN s.status = 'Deleted' THEN 'Inactive' ELSE u.status END AS status,
+              u.institution_id AS "institutionId",
+              COALESCE(u.must_change_password, FALSE) AS "mustChangePassword",
+              COALESCE(u.login_id, s.login_id, '') AS "loginId"
+       FROM users u
+       JOIN students s ON s.institution_id = u.institution_id AND (
+         (s.parent_email <> '' AND LOWER(s.parent_email) = LOWER(u.email)) OR
+         u.email = 'student_' || LOWER(REPLACE(s.admission, ' ', '')) || '@' || LOWER(s.institution_id) || '.internal' OR
+         u.login_id = s.login_id OR
+         LOWER(u.email) = LOWER(s.admission) || '@student.internal'
+       )
+       WHERE u.role IN ('STUDENT', 'PARENT') AND (
+         (s.login_id <> '' AND LOWER(TRIM(s.login_id)) = ?) OR
+         LOWER(TRIM(s.admission)) = ?
+       )
+       ORDER BY CASE WHEN s.status <> 'Deleted' THEN 0 ELSE 1 END, s.created_at DESC
+       LIMIT 1`,
+      [lower, lower],
+      db,
+    );
+    if (studentById) return studentById;
   } catch {
     // Ignore
   }
@@ -1181,6 +1230,7 @@ export async function createAccountWithSession(input: {
   studentCount?: number;
   subscriptionStartDate?: Date;
   subscriptionEndDate?: Date;
+  institutionType?: string;
 }) {
   const db = await ready();
   const institutionId = randomUUID();
@@ -1191,13 +1241,13 @@ export async function createAccountWithSession(input: {
   const academicYear=defaultAcademicYear().split("-").map(Number),subscriptionStartDate=input.subscriptionStartDate??new Date(Date.UTC(academicYear[0],3,1)),subscriptionEndDate=input.subscriptionEndDate??new Date(Date.UTC(academicYear[1],3,1)-1);
 
   await db.begin(async (tx) => {
-    await run("INSERT INTO institutions(id,name,planned_student_count,subscription_start_date,subscription_end_date)VALUES(?,?,?,?,?)", [institutionId, input.institution, input.studentCount ?? 0,subscriptionStartDate,subscriptionEndDate], tx);
+    await run("INSERT INTO institutions(id,name,planned_student_count,subscription_start_date,subscription_end_date,institution_type)VALUES(?,?,?,?,?,?)", [institutionId, input.institution, input.studentCount ?? 0,subscriptionStartDate,subscriptionEndDate, input.institutionType ?? 'School'], tx);
     await run(
       "INSERT INTO users(id,email,name,password_hash,role,institution_id)VALUES(?,?,?,?,?,?)",
       [userId, email, input.name, input.passwordHash, "SCHOOL_ADMIN", institutionId],
       tx,
     );
-    await run("INSERT INTO settings(institution_id,school_email,school_phone,academic_year)VALUES(?,?,?,?)", [institutionId, email, input.phone?.trim() || "", defaultAcademicYear()], tx);
+    await run("INSERT INTO settings(institution_id,school_email,school_phone,academic_year,default_teacher_password,default_student_password,teacher_password_mode,student_password_mode)VALUES(?,?,?,?,?,?,?,?)", [institutionId, email, input.phone?.trim() || "", defaultAcademicYear(), "EduTeacher@2026", "EduStudent@2026", "COMMON", "COMMON"], tx);
     await seedDashboardDefaults(institutionId, defaultAcademicYear(), tx);
     await run("INSERT INTO sessions(token,user_id,expires_at)VALUES(?,?,?)", [token, userId, expires], tx);
   });

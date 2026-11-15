@@ -1,7 +1,7 @@
 "use client";
 import NextLink from "next/link";
 import { usePathname,useRouter } from "next/navigation";
-import { ArrowUpRight,BookOpen,Building2,CalendarCheck2,CalendarDays,ChevronRight,Command,FileCheck2,FileText,GraduationCap,IdCard,IndianRupee,Landmark,Layers3,LayoutDashboard,LogOut,Menu,MessageCircle,ReceiptText,Search,Settings,Users,WalletCards,WalletMinimal,X } from "lucide-react";
+import { ArrowUpRight,BookOpen,Building2,CalendarCheck2,CalendarDays,ChevronRight,Command,FileCheck2,FileText,GraduationCap,IdCard,IndianRupee,Landmark,Layers3,LayoutDashboard,LogOut,Menu,MessageCircle,ReceiptText,Search,Settings,ShieldCheck,Users,WalletCards,WalletMinimal,X } from "lucide-react";
 import { useCallback,useEffect,useState,type ElementType } from "react";
 import { Logo } from "./logo";
 import { ThemeToggle } from "./theme";
@@ -20,7 +20,7 @@ const groups:{label:string;items:NavItem[]}[]=[
  {label:"Communication",items:[{label:"WhatsApp Communication",href:"/dashboard/whatsapp",icon:MessageCircle}]},
  {label:"Finance",items:[{label:"Fee Collection",href:"/dashboard/payments",icon:IndianRupee},{label:"Fee History",href:"/dashboard/payment-history",icon:WalletCards},{label:"Salary Management",href:"/dashboard/salary-management",icon:WalletMinimal},{label:"Finance / Transactions",href:"/dashboard/accounts",icon:Landmark},{label:"Receipts",href:"/dashboard/fee-receipts",icon:ReceiptText},{label:"Cash Book",href:"/dashboard/cash-book",icon:BookOpen}]},
  {label:"Academic Tools",items:[{label:"Timetable",href:"/dashboard/timetable",icon:CalendarDays},{label:"Results Management",href:"/dashboard/results",icon:FileCheck2},{label:"Reports",href:"/dashboard/reports",icon:FileText},{label:"Promotion",href:"/dashboard/students/promote",icon:ArrowUpRight}]},
- {label:"System",items:[{label:"Settings",href:"/dashboard/settings",icon:Settings}]},
+ {label:"System",items:[{label:"Credentials & Access",href:"/dashboard/credentials",icon:ShieldCheck},{label:"Settings",href:"/dashboard/settings",icon:Settings}]},
 ];
 export function Shell({children,user,schoolName,academicYear,subscription}:{children:React.ReactNode;user:{name:string;role:string};schoolName:string;academicYear:string;subscription:SubscriptionSummary}){
  const {clear}=useEduCache();
